@@ -45,6 +45,9 @@ jobs:
             src/cursor_assassin/__main__.py
           # Hide Dock icon — pure menu-bar app.
           plutil -insert LSUIElement -bool true "dist/CursorAssassin.app/Contents/Info.plist"
+          # Editing the plist invalidates PyInstaller's signature; re-sign ad-hoc
+          # or Gatekeeper reports the app as "damaged" on download.
+          codesign --force --deep --sign - "dist/CursorAssassin.app"
           ditto -c -k --sequesterRsrc --keepParent "dist/CursorAssassin.app" "${{ matrix.artifact }}"
 
       - name: Build Windows .exe
