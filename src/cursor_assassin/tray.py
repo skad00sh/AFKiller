@@ -59,10 +59,19 @@ def build_menu(
         return _f
 
     def _trigger_submenu(key: str) -> pystray.Menu:
+        # pystray rejects actions whose co_argcount > 2, and default-valued
+        # params count toward co_argcount. Capture loop vars via factory
+        # closures so each action stays a strict 2-arg (icon, item) callable.
+        def _on_toggle(k: str) -> Callable[[object, object], None]:
+            return lambda _icon, _item: toggle_trigger(k)
+
+        def _on_set_threshold(k: str, p: int) -> Callable[[object, object], None]:
+            return lambda _icon, _item: set_threshold(k, p)
+
         items: list[pystray.MenuItem] = [
             pystray.MenuItem(
                 "Enabled",
-                lambda _icon, _item, k=key: toggle_trigger(k),
+                _on_toggle(key),
                 checked=lambda _item, k=key: cfg.triggers[k].enabled,
             ),
             pystray.Menu.SEPARATOR,
@@ -71,7 +80,7 @@ def build_menu(
             items.append(
                 pystray.MenuItem(
                     _human_minutes(preset),
-                    lambda _icon, _item, k=key, p=preset: set_threshold(k, p),
+                    _on_set_threshold(key, preset),
                     checked=lambda _item, k=key, p=preset: cfg.triggers[k].threshold_minutes == p,
                     radio=True,
                 )
