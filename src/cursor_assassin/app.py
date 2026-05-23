@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
-import threading
 import time
+import threading
 from dataclasses import dataclass
 from typing import Optional
 
 import pystray
 
 from cursor_assassin import config as cfg_mod
-from cursor_assassin import focus, idle, process, warning
+from cursor_assassin import focus, idle, process, settings, warning
+from cursor_assassin.config import PAUSE_DURATION_SEC
 from cursor_assassin.tray import build_menu, make_icon_image
 
-PAUSE_DURATION_SEC = 30 * 60
 TICK_SECONDS = 1.0
 
 
@@ -29,7 +30,8 @@ class App:
         self.cfg = cfg_mod.load()
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
-        self.paused_until: float = 0.0
+        self._settings_proc: Optional[subprocess.Popen] = None
+        self._cfg_mtime = self._config_mtime()
 
         # Per-trigger bookkeeping (timestamps).
         self.last_cursor_foreground_at: Optional[float] = None
@@ -44,11 +46,8 @@ class App:
             icon=make_icon_image(),
             title="Cursor Assassin",
             menu=build_menu(
-                self.cfg,
                 countdown_text=lambda: self._countdown_text,
-                toggle_trigger=self._toggle_trigger,
-                set_threshold=self._set_threshold,
-                set_close_mode=self._set_close_mode,
+                open_settings=self._open_settings,
                 toggle_pause=self._toggle_pause,
                 is_paused=self._is_paused,
                 quit_cursor_now=self._quit_cursor_now,
@@ -56,40 +55,54 @@ class App:
             ),
         )
 
-    # ----- tray menu callbacks -----
+    # ----- config persistence -----
+
+    def _config_mtime(self) -> float:
+        try:
+            return cfg_mod.config_path().stat().st_mtime
+        except OSError:
+            return 0.0
 
     def _save(self) -> None:
         cfg_mod.save(self.cfg)
+        self._cfg_mtime = self._config_mtime()  # our own write, don't self-reload
 
-    def _toggle_trigger(self, key: str) -> None:
-        with self.lock:
-            t = self.cfg.triggers[key]
-            t.enabled = not t.enabled
-            self._save()
-        self._refresh_menu()
+    def _maybe_reload_config(self) -> None:
+        """Pick up edits made by the settings child process."""
+        mtime = self._config_mtime()
+        if mtime and mtime != self._cfg_mtime:
+            self._cfg_mtime = mtime
+            with self.lock:
+                self.cfg = cfg_mod.load()
+            self._refresh_menu()
 
-    def _set_threshold(self, key: str, minutes: int) -> None:
-        with self.lock:
-            self.cfg.triggers[key].threshold_minutes = minutes
-            self._save()
-        self._refresh_menu()
-
-    def _set_close_mode(self, mode: str) -> None:
-        with self.lock:
-            self.cfg.close_mode = mode
-            self._save()
-        self._refresh_menu()
+    # ----- tray menu callbacks -----
 
     def _toggle_pause(self) -> None:
         with self.lock:
-            if self._is_paused():
-                self.paused_until = 0.0
-            else:
-                self.paused_until = time.monotonic() + PAUSE_DURATION_SEC
+            self.cfg.paused_until_epoch = (
+                time.time() + PAUSE_DURATION_SEC if not self._is_paused() else 0.0
+            )
+            self._save()
         self._refresh_menu()
 
     def _is_paused(self) -> bool:
-        return self.paused_until > time.monotonic()
+        return time.time() < self.cfg.paused_until_epoch
+
+    @staticmethod
+    def _self_cmd(*extra: str) -> list[str]:
+        """Command to relaunch this app in a sub-mode, in dev or frozen builds."""
+        if getattr(sys, "frozen", False):
+            return [sys.executable, *extra]
+        return [sys.executable, "-m", "cursor_assassin", *extra]
+
+    def _open_settings(self) -> None:
+        if self._settings_proc is not None and self._settings_proc.poll() is None:
+            return  # already open
+        try:
+            self._settings_proc = subprocess.Popen(self._self_cmd("--settings"))
+        except OSError as e:
+            print(f"[cursor-assassin] failed to open settings: {e}", file=sys.stderr)
 
     def _quit_cursor_now(self) -> None:
         if self.cfg.close_mode == "force_kill":
@@ -144,13 +157,19 @@ class App:
             process.kill_force()
             return
 
-        # graceful_warn
-        cancelled = warning.show_warning(self.cfg.warning_seconds)
+        # graceful_warn: run the countdown in a child process (Tk can't live in
+        # the tray process on macOS). Exit 0 => ran out (close); nonzero/crash
+        # => treat as cancelled, so we never kill Cursor on an ambiguous result.
+        cancelled = True
+        try:
+            proc = subprocess.run(self._self_cmd("--warn", str(self.cfg.warning_seconds)))
+            cancelled = proc.returncode != 0
+        except OSError as e:
+            print(f"[cursor-assassin] failed to show warning: {e}", file=sys.stderr)
+
         if cancelled:
-            # User wants to keep Cursor open — reset *all* trigger clocks so we
-            # don't immediately re-fire.
-            now = time.monotonic()
-            self._reset_trigger_timers(now)
+            # Keep Cursor open — reset *all* trigger clocks so we don't re-fire.
+            self._reset_trigger_timers(time.monotonic())
             return
         process.quit_graceful()
 
@@ -164,6 +183,7 @@ class App:
             self.stop_event.wait(TICK_SECONDS)
 
     def _tick(self) -> None:
+        self._maybe_reload_config()
         now = time.monotonic()
         running = process.cursor_running()
 
@@ -183,7 +203,7 @@ class App:
 
         # Paused: show paused text and skip trigger evaluation.
         if self._is_paused():
-            mins_left = int((self.paused_until - now) // 60) + 1
+            mins_left = int((self.cfg.paused_until_epoch - time.time()) // 60) + 1
             self._set_countdown(f"Paused ({mins_left} min left)")
             return
 
@@ -212,6 +232,7 @@ class App:
         if text == self._countdown_text:
             return
         self._countdown_text = text
+        cfg_mod.write_status(text)  # publish for the settings window
         # Tooltip on hover (Windows) / menu bar title hint (macOS limited).
         try:
             self.icon.title = f"Cursor Assassin — {text}"
@@ -230,7 +251,40 @@ class App:
         watcher_thread.join(timeout=2)
 
 
+def _ensure_tcl_paths() -> None:
+    """python-build-standalone (what uv installs) ships Tcl/Tk under
+    base_prefix/lib but doesn't set TCL_LIBRARY/TK_LIBRARY, so Tk can fail with
+    'cannot find a usable init.tcl'. Point it at the bundled data. PyInstaller
+    sets these itself in frozen builds, so skip there."""
+    if getattr(sys, "frozen", False):
+        return
+    import glob
+    import os
+
+    lib = os.path.join(sys.base_prefix, "lib")
+    for var, pattern, marker in (
+        ("TCL_LIBRARY", "tcl*", "init.tcl"),
+        ("TK_LIBRARY", "tk*", "tk.tcl"),
+    ):
+        if os.environ.get(var):
+            continue
+        for d in sorted(glob.glob(os.path.join(lib, pattern)), reverse=True):
+            if os.path.isfile(os.path.join(d, marker)):
+                os.environ[var] = d
+                break
+
+
 def main() -> None:
+    _ensure_tcl_paths()
+    argv = sys.argv[1:]
+    if argv and argv[0] == "--settings":
+        settings.run_standalone()
+        return
+    if argv and argv[0] == "--warn":
+        seconds = int(argv[1]) if len(argv) > 1 else 30
+        cancelled = warning.run_standalone(seconds)
+        # Nonzero == cancelled/keep-open; 0 == proceed to close.
+        raise SystemExit(10 if cancelled else 0)
     App().run()
 
 

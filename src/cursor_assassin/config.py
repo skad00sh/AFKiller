@@ -17,10 +17,16 @@ class TriggerConfig:
     threshold_minutes: int
 
 
+PAUSE_DURATION_SEC = 30 * 60
+
+
 @dataclass
 class Config:
     close_mode: str = "graceful_warn"  # or "force_kill"
     warning_seconds: int = 30
+    # Wall-clock epoch (time.time()) until which triggers are paused; 0 = not
+    # paused. Stored on disk so the separate settings process can drive pause.
+    paused_until_epoch: float = 0.0
     triggers: dict[str, TriggerConfig] = field(
         default_factory=lambda: {
             "system_idle": TriggerConfig(enabled=True, threshold_minutes=30),
@@ -33,9 +39,49 @@ class Config:
 VALID_CLOSE_MODES = {"graceful_warn", "force_kill"}
 TRIGGER_KEYS = ("system_idle", "cursor_unfocused", "hard_cap")
 
+TRIGGER_LABELS: dict[str, str] = {
+    "system_idle": "System idle",
+    "cursor_unfocused": "Cursor unfocused",
+    "hard_cap": "Hard cap",
+}
+
+# Per-trigger preset thresholds (minutes), offered in the menu/settings dropdowns.
+TRIGGER_PRESETS: dict[str, tuple[int, ...]] = {
+    "system_idle": (5, 10, 15, 30, 60),
+    "cursor_unfocused": (5, 10, 15, 20, 30, 60),
+    "hard_cap": (60, 120, 240, 480),
+}
+
+
+def human_minutes(m: int) -> str:
+    if m % 60 == 0 and m >= 60:
+        return f"{m // 60} h"
+    return f"{m} min"
+
 
 def config_path() -> Path:
     return Path(user_config_dir(APP_NAME)) / "config.toml"
+
+
+def status_path() -> Path:
+    return Path(user_config_dir(APP_NAME)) / "status.txt"
+
+
+def write_status(text: str) -> None:
+    """Best-effort publish of the live countdown for the settings window to read."""
+    try:
+        p = status_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def read_status() -> str:
+    try:
+        return status_path().read_text(encoding="utf-8").strip() or "Cursor Assassin"
+    except OSError:
+        return "Cursor Assassin"
 
 
 def load() -> Config:
@@ -55,6 +101,9 @@ def load() -> Config:
     warn = data.get("warning_seconds")
     if isinstance(warn, int) and warn > 0:
         cfg.warning_seconds = warn
+    paused = data.get("paused_until_epoch")
+    if isinstance(paused, (int, float)) and paused > 0:
+        cfg.paused_until_epoch = float(paused)
 
     triggers = data.get("triggers", {})
     for key in TRIGGER_KEYS:
@@ -78,6 +127,7 @@ def save(cfg: Config) -> None:
     lines = [
         f'close_mode = "{cfg.close_mode}"',
         f"warning_seconds = {cfg.warning_seconds}",
+        f"paused_until_epoch = {cfg.paused_until_epoch}",
         "",
     ]
     for key, trig in cfg.triggers.items():
