@@ -92,12 +92,6 @@ Then `launchctl load ~/Library/LaunchAgents/com.cursor-assassin.plist`.
 "C:\Users\YOU\.local\bin\uv.exe" run --directory "C:\path\to\cursor-assassin" cursor-assassin
 ```
 
-## Roadmap
-
-- v2: call Databricks REST API to stop the cluster directly (belt-and-suspenders, won't rely on SSH timeout).
-- Custom per-trigger minute input (v1 ships preset values only).
-- Windows auto-start installer.
-
 ## License
 
 See [LICENSE](LICENSE).
