@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}  # manual trigger to test the build without cutting a release
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: CursorAssassin-macos.zip
+          - os: windows-latest
+            artifact: CursorAssassin-windows.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install deps (incl. build group)
+        run: uv sync --group build
+
+      - name: Build macOS .app
+        if: runner.os == 'macOS'
+        run: |
+          uv run pyinstaller \
+            --noconfirm \
+            --name CursorAssassin \
+            --windowed \
+            --osx-bundle-identifier com.skad00sh.cursor-assassin \
+            --collect-all pystray \
+            --collect-all PIL \
+            src/cursor_assassin/__main__.py
+          # Hide Dock icon — pure menu-bar app.
+          plutil -insert LSUIElement -bool true "dist/CursorAssassin.app/Contents/Info.plist"
+          ditto -c -k --sequesterRsrc --keepParent "dist/CursorAssassin.app" "${{ matrix.artifact }}"
+
+      - name: Build Windows .exe
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          uv run pyinstaller \
+            --noconfirm \
+            --name CursorAssassin \
+            --windowed \
+            --onefile \
+            --collect-all pystray \
+            --collect-all PIL \
+            src/cursor_assassin/__main__.py
+          7z a "${{ matrix.artifact }}" "./dist/CursorAssassin.exe"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false

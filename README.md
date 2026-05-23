@@ -92,6 +92,34 @@ Then `launchctl load ~/Library/LaunchAgents/com.cursor-assassin.plist`.
 "C:\Users\YOU\.local\bin\uv.exe" run --directory "C:\path\to\cursor-assassin" cursor-assassin
 ```
 
+## Releasing
+
+Tagged pushes trigger `.github/workflows/release.yml`, which uses PyInstaller on `macos-latest` and `windows-latest` runners to build:
+
+- `CursorAssassin-macos.zip` — contains `CursorAssassin.app` (menu-bar-only via `LSUIElement`)
+- `CursorAssassin-windows.zip` — contains `CursorAssassin.exe`
+
+Both are attached to a GitHub Release with auto-generated notes.
+
+To cut a release:
+
+```bash
+git tag v0.1.0
+git push --tags
+```
+
+To test the build without publishing, trigger the workflow manually from the Actions tab (the `release` job is skipped unless the ref is a tag).
+
+To build locally for a single platform:
+
+```bash
+uv sync --group build
+uv run pyinstaller --noconfirm --name CursorAssassin --windowed \
+  --collect-all pystray --collect-all PIL \
+  src/cursor_assassin/__main__.py
+# macOS only: plutil -insert LSUIElement -bool true "dist/CursorAssassin.app/Contents/Info.plist"
+```
+
 ## License
 
 See [LICENSE](LICENSE).
