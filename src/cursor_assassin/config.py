@@ -21,6 +21,17 @@ PAUSE_DURATION_SEC = 30 * 60
 
 
 @dataclass
+class DatabricksConfig:
+    enabled: bool = False
+    profile: str = "DEFAULT"  # ~/.databrickscfg profile; OAuth or PAT (CLI handles both)
+    cluster_id: str = ""  # "" = auto-detect from the live SSH proxy process
+    delay_minutes: int = 10  # grace window after Cursor closes; 0 = stop immediately
+    require_system_idle: bool = False  # also require the OS to be idle for the window
+    notify: bool = True  # native notification when a cluster is stopped
+    cli_path: str = ""  # "" = auto-resolve the databricks binary
+
+
+@dataclass
 class Config:
     close_mode: str = "graceful_warn"  # or "force_kill"
     warning_seconds: int = 30
@@ -34,6 +45,7 @@ class Config:
             "hard_cap": TriggerConfig(enabled=False, threshold_minutes=240),
         }
     )
+    databricks: DatabricksConfig = field(default_factory=DatabricksConfig)
 
 
 VALID_CLOSE_MODES = {"graceful_warn", "force_kill"}
@@ -52,11 +64,25 @@ TRIGGER_PRESETS: dict[str, tuple[int, ...]] = {
     "hard_cap": (60, 120, 240, 480),
 }
 
+# Grace-window presets (minutes) for the Databricks cluster-stop, offered in settings.
+# 0 = stop the cluster immediately when Cursor closes.
+DATABRICKS_DELAY_PRESETS: tuple[int, ...] = (0, 5, 10, 15, 30, 60)
+
 
 def human_minutes(m: int) -> str:
     if m % 60 == 0 and m >= 60:
         return f"{m // 60} h"
     return f"{m} min"
+
+
+def human_delay(m: int) -> str:
+    """Human label for a cluster-stop grace window; 0 means immediate."""
+    return "Immediately" if m <= 0 else human_minutes(m)
+
+
+def _toml_str(s: str) -> str:
+    """Render a Python string as a TOML basic string (escape backslashes + quotes)."""
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def config_path() -> Path:
@@ -117,6 +143,28 @@ def load() -> Config:
         if isinstance(thr, int) and thr > 0:
             existing.threshold_minutes = thr
 
+    db = data.get("databricks")
+    if isinstance(db, dict):
+        d = cfg.databricks
+        if isinstance(db.get("enabled"), bool):
+            d.enabled = db["enabled"]
+        prof = db.get("profile")
+        if isinstance(prof, str) and prof.strip():
+            d.profile = prof.strip()
+        cid = db.get("cluster_id")
+        if isinstance(cid, str):
+            d.cluster_id = cid.strip()
+        delay = db.get("delay_minutes")
+        if isinstance(delay, int) and not isinstance(delay, bool) and delay >= 0:
+            d.delay_minutes = delay
+        if isinstance(db.get("require_system_idle"), bool):
+            d.require_system_idle = db["require_system_idle"]
+        if isinstance(db.get("notify"), bool):
+            d.notify = db["notify"]
+        cli = db.get("cli_path")
+        if isinstance(cli, str):
+            d.cli_path = cli.strip()
+
     return cfg
 
 
@@ -135,6 +183,17 @@ def save(cfg: Config) -> None:
         lines.append(f"enabled = {'true' if trig.enabled else 'false'}")
         lines.append(f"threshold_minutes = {trig.threshold_minutes}")
         lines.append("")
+
+    d = cfg.databricks
+    lines.append("[databricks]")
+    lines.append(f"enabled = {'true' if d.enabled else 'false'}")
+    lines.append(f"profile = {_toml_str(d.profile)}")
+    lines.append(f"cluster_id = {_toml_str(d.cluster_id)}")
+    lines.append(f"delay_minutes = {d.delay_minutes}")
+    lines.append(f"require_system_idle = {'true' if d.require_system_idle else 'false'}")
+    lines.append(f"notify = {'true' if d.notify else 'false'}")
+    lines.append(f"cli_path = {_toml_str(d.cli_path)}")
+    lines.append("")
 
     path.write_text("\n".join(lines), encoding="utf-8")
 
