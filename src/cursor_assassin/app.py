@@ -12,11 +12,13 @@ from typing import Optional
 import pystray
 
 from cursor_assassin import config as cfg_mod
-from cursor_assassin import focus, idle, process, settings, warning
+from cursor_assassin import databricks, focus, idle, process, settings, warning
 from cursor_assassin.config import PAUSE_DURATION_SEC
 from cursor_assassin.tray import build_menu, make_icon_image
 
 TICK_SECONDS = 1.0
+# Re-scan for the live Databricks SSH proxy process every N ticks (not every tick).
+DB_DETECT_INTERVAL_TICKS = 5
 
 
 @dataclass
@@ -38,6 +40,11 @@ class App:
         self.cursor_first_seen_at: Optional[float] = None
         self._cursor_running_prev = False
 
+        # Databricks cluster-stop bookkeeping.
+        self.cursor_closed_at: Optional[float] = None
+        self.last_connected_cluster_id: Optional[str] = None
+        self._db_detect_counter = 0
+
         # Last computed remaining-seconds across enabled triggers.
         self._countdown_text = "Starting..."
 
@@ -51,6 +58,8 @@ class App:
                 toggle_pause=self._toggle_pause,
                 is_paused=self._is_paused,
                 quit_cursor_now=self._quit_cursor_now,
+                stop_cluster_now=self._stop_cluster_now,
+                databricks_enabled=lambda: self.cfg.databricks.enabled,
                 quit_app=self._quit_app,
             ),
         )
@@ -109,6 +118,49 @@ class App:
             process.kill_force()
         else:
             process.quit_graceful()
+
+    def _stop_cluster_now(self) -> None:
+        """Manual 'Stop cluster now'. Runs in a thread so the blocking CLI call doesn't
+        freeze the tray menu."""
+        threading.Thread(target=self._do_stop_cluster_now, daemon=True).start()
+
+    def _do_stop_cluster_now(self) -> None:
+        db = self.cfg.databricks
+        target = (
+            db.cluster_id
+            or self.last_connected_cluster_id
+            or databricks.detect_active_cluster_id()
+        )
+        if not target:
+            self._notify("Cursor Assassin", "No Databricks cluster detected to stop.")
+            return
+        ok = databricks.terminate_cluster(target, db.profile)
+        if db.notify:
+            self._notify(
+                "Cursor Assassin",
+                f"Stopping Databricks cluster {target}"
+                if ok
+                else f"Failed to stop cluster {target}",
+            )
+
+    def _notify(self, title: str, message: str) -> None:
+        """Best-effort native notification; falls back to osascript on macOS."""
+        try:
+            self.icon.notify(message, title)
+            return
+        except Exception:
+            pass
+        if sys.platform == "darwin":
+            msg = message.replace('"', '\\"')
+            ttl = title.replace('"', '\\"')
+            try:
+                subprocess.run(
+                    ["osascript", "-e", f'display notification "{msg}" with title "{ttl}"'],
+                    check=False,
+                    timeout=5,
+                )
+            except (OSError, subprocess.SubprocessError):
+                pass
 
     def _quit_app(self) -> None:
         self.stop_event.set()
@@ -173,6 +225,51 @@ class App:
             return
         process.quit_graceful()
 
+    def _maybe_stop_cluster(self, now: float) -> None:
+        """Called each tick while Cursor is not running. Stops the Databricks cluster once
+        it has been closed for the configured grace window, unless an SSH session is still
+        active. Updates the countdown text either way."""
+        db = self.cfg.databricks
+        target = db.cluster_id or self.last_connected_cluster_id
+        if not db.enabled or not target or self.cursor_closed_at is None:
+            # Feature off, no cluster known, or never observed a close this session.
+            self._set_countdown("Cursor not running")
+            return
+
+        window = db.delay_minutes * 60
+        remaining = window - (now - self.cursor_closed_at)
+        if db.require_system_idle:
+            # Fire only once both Cursor-closed *and* OS-idle exceed the window.
+            remaining = max(remaining, window - idle.seconds_since_input())
+
+        if remaining > 0:
+            mm, ss = divmod(int(remaining), 60)
+            self._set_countdown(f"Cluster stops in {mm:02d}:{ss:02d}")
+            return
+
+        # Window elapsed — re-check the guard, then act.
+        if databricks.ssh_session_active(target):
+            # A session is live again (e.g. terminal ssh) — hold off and re-arm.
+            self.cursor_closed_at = now
+            self._set_countdown("Cluster in use (SSH active)")
+            return
+
+        state = databricks.cluster_state(target, db.profile)
+        if state is not None and state != databricks.RUNNING:
+            # Already stopped/stopping/pending — nothing to do.
+            self.cursor_closed_at = None
+            self._set_countdown(f"Cluster {state.lower()}")
+            return
+
+        self._set_countdown("Stopping cluster…")
+        if databricks.terminate_cluster(target, db.profile):
+            if db.notify:
+                self._notify("Cursor Assassin", f"Stopping Databricks cluster {target}")
+            self.cursor_closed_at = None  # done; don't re-fire
+        else:
+            # CLI missing/unauth/network error — retry after another full window, no spam.
+            self.cursor_closed_at = now
+
     def _watcher(self) -> None:
         while not self.stop_event.is_set():
             try:
@@ -192,14 +289,31 @@ class App:
             # First time we've seen Cursor since startup or last close.
             self.cursor_first_seen_at = now
             self.last_cursor_foreground_at = now
+            self.cursor_closed_at = None  # reopened → cancel any pending cluster-stop
         elif not running:
             self.cursor_first_seen_at = None
             self.last_cursor_foreground_at = None
+            if self._cursor_running_prev:
+                # running → closed transition: arm the cluster-stop grace timer. Only after
+                # an observed transition, so we never touch a cluster that was already up
+                # with Cursor closed at startup.
+                self.cursor_closed_at = now
         self._cursor_running_prev = running
 
         # Update "last cursor foreground" timestamp if it's the frontmost app now.
         if running and focus.is_cursor_foreground():
             self.last_cursor_foreground_at = now
+
+        # While connected, remember which cluster Cursor's SSH tunnel is using, so we can
+        # stop it after Cursor closes (the proxy process is usually gone by then).
+        db = self.cfg.databricks
+        if running and db.enabled and not db.cluster_id:
+            self._db_detect_counter += 1
+            if self._db_detect_counter >= DB_DETECT_INTERVAL_TICKS:
+                self._db_detect_counter = 0
+                cid = databricks.detect_active_cluster_id()
+                if cid:
+                    self.last_connected_cluster_id = cid
 
         # Paused: show paused text and skip trigger evaluation.
         if self._is_paused():
@@ -208,7 +322,7 @@ class App:
             return
 
         if not running:
-            self._set_countdown("Cursor not running")
+            self._maybe_stop_cluster(now)
             return
 
         remaining = self._remaining_for_enabled_triggers(now)
