@@ -23,6 +23,36 @@ Pick one in the tray menu:
 - **Graceful w/ warning** *(default)* — pops a 30s countdown dialog with a Cancel button, then asks Cursor to quit cleanly (your unsaved-file prompts still appear).
 - **Force kill** — hard-kills the Cursor process tree immediately. Fastest cluster shutdown; may lose unsaved changes.
 
+## Databricks cluster stop (optional)
+
+Closing Cursor only drops the Remote-SSH session — the cluster then runs until its *own* auto-termination, which can be an hour or two away. Enable this to **terminate the cluster directly** a configurable interval after Cursor closes, closing that spend gap.
+
+How it works:
+
+- **Stops the cluster `N` minutes after Cursor closes** (`0` = immediately). Reopen Cursor within that window and the stop is cancelled. Optionally also require the system to be idle.
+- **Never stops a cluster that's in use.** The stop is held off while Cursor is running or while *any* SSH session to the cluster is active (so a long-running job isn't killed just because you stepped away from the keyboard).
+- **Auto-detects the cluster.** Cursor's Databricks Remote Development runs a local `databricks ssh connect --cluster <id>` tunnel; the cluster ID is read from that process while you're connected and remembered for after Cursor closes. You can also pin a cluster explicitly in settings (dropdown via `databricks clusters list`, or paste an ID).
+- **Terminate, not delete.** It calls `databricks clusters delete`, which *stops* the cluster (reversible) — it never permanent-deletes.
+
+Requirements:
+
+- The [`databricks` CLI](https://docs.databricks.com/dev-tools/cli/) installed and authenticated. Both **OAuth** (`databricks auth login`) and **PAT** profiles work — we shell out to the CLI, which handles either. No tokens are stored by this app.
+- Configure it in **Settings → Databricks cluster stop**: enable, pick the CLI profile, choose the cluster (or leave on auto-detect), set the delay, and use **Test connection** to confirm it's wired up. **Stop cluster now** (settings button and tray menu item) terminates on demand.
+
+Config keys (under `[databricks]` in `config.toml`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Master switch for the feature. |
+| `profile` | `"DEFAULT"` | `~/.databrickscfg` profile (OAuth or PAT); falls back to `DATABRICKS_HOST`/`DATABRICKS_TOKEN` env if unset. |
+| `cluster_id` | `""` | Explicit cluster; `""` = auto-detect from the SSH tunnel. |
+| `delay_minutes` | `10` | Grace window after Cursor closes; `0` = stop immediately. |
+| `require_system_idle` | `false` | Also require the OS to be idle for the window. |
+| `notify` | `true` | Native notification when a cluster is stopped. |
+| `cli_path` | `""` | Path to the `databricks` binary; `""` = auto-resolve (PATH + common locations). |
+
+The **Pause** action suppresses the cluster stop along with the Cursor-close triggers.
+
 ## Setup
 
 Requires [`uv`](https://github.com/astral-sh/uv) and Python 3.12.
@@ -39,19 +69,16 @@ A red "CA" badge appears in the menu bar (macOS) or notification area (Windows).
 
 ## Tray menu
 
+The tray menu is a thin launcher (the native menu dismisses on every click, so trigger/threshold/close-mode/Databricks configuration lives in the **Settings** window):
+
 ```
-Cursor closes in 12:34 (system idle)
+Closes in 12:34 (system idle)
 ─────────────────────
-Triggers ▸
-    System idle (30 min) ▸  [Enabled ✓] [5/10/15/30/60 min]
-    Cursor unfocused (20 min) ▸  [Enabled] [5/10/15/20/30/60 min]
-    Hard cap (4 h) ▸  [Enabled] [1/2/4/8 h]
-Close mode ▸
-    ● Graceful w/ warning
-    ○ Force kill
+Settings…
 Pause 30 min
 ─────────────────────
 Quit Cursor now
+Stop cluster now        ← only when Databricks cluster stop is enabled
 Quit Cursor Assassin
 ```
 
