@@ -29,6 +29,8 @@ def build_menu(
     toggle_pause: Callable[[], None],
     is_paused: Callable[[], bool],
     quit_cursor_now: Callable[[], None],
+    stop_cluster_now: Callable[[], None],
+    databricks_enabled: Callable[[], bool],
     quit_app: Callable[[], None],
 ) -> pystray.Menu:
     return pystray.Menu(
@@ -42,5 +44,10 @@ def build_menu(
         ),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Quit Cursor now", lambda _icon, _item: quit_cursor_now()),
+        pystray.MenuItem(
+            "Stop cluster now",
+            lambda _icon, _item: stop_cluster_now(),
+            visible=lambda _item: databricks_enabled(),
+        ),
         pystray.MenuItem("Quit Cursor Assassin", lambda _icon, _item: quit_app()),
     )
