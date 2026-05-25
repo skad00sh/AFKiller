@@ -1,8 +1,12 @@
 # afkiller
 
-Tray app that auto-closes [Cursor](https://www.cursor.com/) when you're not actively using it, so a forgotten Remote-SSH session doesn't keep a billable Databricks cluster alive overnight.
+Tray app that auto-closes [Cursor](https://www.cursor.com/) when you're not actively using it, so a forgotten editor session doesn't keep a billable cloud machine alive.
+
+It's aimed at [Databricks Remote Development](https://docs.databricks.com/aws/en/dev-tools/remote-development): you connect the Cursor IDE to a Databricks cluster over SSH and your code runs on the cluster. That's great — until you walk away. The SSH session keeps the (billable) cluster alive long after you've stopped working, and it's easy to forget the IDE open overnight. **AFKiller solves this by closing the Cursor IDE when you're idle/AFK** — and, optionally, stopping the Databricks cluster directly.
 
 Runs on **macOS** and **Windows**. Sits in the menu bar / notification area and shows a live countdown to the next scheduled close.
+
+> **Not affiliated.** AFKiller is an independent, unofficial tool. It is not affiliated with, endorsed by, or sponsored by Cursor (Anysphere) or Databricks. "Cursor" and "Databricks" are referenced only to describe what this tool works with.
 
 ## How it decides to close Cursor
 
@@ -86,38 +90,6 @@ All changes persist immediately to the config file:
 
 - **macOS:** `~/Library/Application Support/afkiller/config.toml`
 - **Windows:** `%APPDATA%\afkiller\config.toml`
-
-## Auto-start on login
-
-**macOS** — drop this LaunchAgent at `~/Library/LaunchAgents/com.afkiller.plist` (replace the path to `uv` if different):
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>com.afkiller</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/Users/YOU/.local/bin/uv</string>
-    <string>run</string>
-    <string>--directory</string>
-    <string>/Users/YOU/Desktop/afkiller</string>
-    <string>afkiller</string>
-  </array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-</dict>
-</plist>
-```
-
-Then `launchctl load ~/Library/LaunchAgents/com.afkiller.plist`.
-
-**Windows** — `Win+R` → `shell:startup` → drop a shortcut whose target is:
-
-```
-"C:\Users\YOU\.local\bin\uv.exe" run --directory "C:\path\to\afkiller" afkiller
-```
 
 ## Releasing
 
