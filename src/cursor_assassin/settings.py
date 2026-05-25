@@ -223,11 +223,20 @@ def run_standalone() -> None:
         db.profile = profile_var.get().strip() or "DEFAULT"
         cfg_mod.save(cfg)
 
-    profile_entry = ttk.Entry(frm, textvariable=profile_var, width=18)
-    profile_entry.bind("<FocusOut>", _on_profile)
-    profile_entry.bind("<Return>", _on_profile)
-    profile_entry.grid(row=row, column=1, sticky="e", padx=(12, 0), pady=2)
+    profile_combo = ttk.Combobox(frm, textvariable=profile_var, width=16, values=[db.profile])
+    profile_combo.bind("<<ComboboxSelected>>", _on_profile)
+    profile_combo.bind("<FocusOut>", _on_profile)
+    profile_combo.bind("<Return>", _on_profile)
+    profile_combo.grid(row=row, column=1, sticky="e", padx=(12, 0), pady=2)
     row += 1
+
+    # Populate the profile dropdown from ~/.databrickscfg (async, non-blocking).
+    def _profiles_done(result: object) -> None:
+        if isinstance(result, Exception) or not result:
+            return
+        profile_combo["values"] = list(dict.fromkeys([*result, db.profile]))  # type: ignore[misc]
+
+    _run_async(lambda: databricks.list_profiles(databricks.resolve_cli(db.cli_path)), _profiles_done)
 
     ttk.Label(frm, text="Cluster").grid(row=row, column=0, sticky="w", pady=2)
     cluster_box = ttk.Frame(frm)
@@ -248,27 +257,49 @@ def run_standalone() -> None:
     cluster_combo.bind("<Return>", _on_cluster)
 
     def _refresh_clusters() -> None:
+        # Show the cluster Cursor is currently connected to (read from the live SSH
+        # tunnel), rather than listing every cluster — which is slow in large workspaces.
         prof = profile_var.get().strip()
-        db_status_var.set("Loading clusters… (can be slow for large workspaces)")
+        db_status_var.set("Detecting connected cluster…")
+
+        def work() -> object:
+            cli = databricks.resolve_cli(db.cli_path)
+            if not cli:
+                return ("err", "databricks CLI not found")
+            infos = [
+                (cid, *databricks.cluster_info(cid, prof, cli=cli))
+                for cid in databricks.detect_active_cluster_ids()
+            ]
+            return ("ok", infos)
 
         def done(result: object) -> None:
-            if isinstance(result, Exception) or not result:
-                cluster_combo["values"] = [AUTO_CLUSTER]
-                db_status_var.set(
-                    "No clusters returned (or the list timed out — large workspace). "
-                    "You can leave this on auto-detect or paste a cluster ID."
-                )
+            if isinstance(result, Exception):
+                db_status_var.set("Error detecting cluster")
                 return
+            kind, payload = result  # type: ignore[misc]
+            if kind == "err":
+                db_status_var.set(str(payload))
+                return
+            infos = payload  # list[(id, name, state)]
             cluster_label_to_id.clear()
             labels = [AUTO_CLUSTER]
-            for cid, name, state in result:  # type: ignore[misc]
+            for cid, name, state in infos:  # type: ignore[misc]
                 label = f"{name or cid} ({state})" if state else (name or cid)
                 cluster_label_to_id[label] = cid
                 labels.append(label)
             cluster_combo["values"] = labels
-            db_status_var.set(f"Found {len(result)} cluster(s)")
+            if not infos:
+                db_status_var.set(
+                    "No connected cluster detected — connect Cursor to a cluster, "
+                    "or paste a cluster ID."
+                )
+            elif len(infos) == 1:
+                cid, name, state = infos[0]
+                db_status_var.set(f"Connected: {name or cid} ({state or 'unknown'})")
+            else:
+                db_status_var.set(f"Connected to {len(infos)} clusters — pick one above")
 
-        _run_async(lambda: databricks.list_clusters(prof), done)
+        _run_async(work, done)
 
     ttk.Button(cluster_box, text="Refresh", width=8, command=_refresh_clusters).grid(
         row=0, column=1, padx=(6, 0)
