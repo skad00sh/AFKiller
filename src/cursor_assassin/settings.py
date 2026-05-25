@@ -249,12 +249,15 @@ def run_standalone() -> None:
 
     def _refresh_clusters() -> None:
         prof = profile_var.get().strip()
-        db_status_var.set("Loading clusters…")
+        db_status_var.set("Loading clusters… (can be slow for large workspaces)")
 
         def done(result: object) -> None:
             if isinstance(result, Exception) or not result:
                 cluster_combo["values"] = [AUTO_CLUSTER]
-                db_status_var.set("No clusters found (check CLI / profile)")
+                db_status_var.set(
+                    "No clusters returned (or the list timed out — large workspace). "
+                    "You can leave this on auto-detect or paste a cluster ID."
+                )
                 return
             cluster_label_to_id.clear()
             labels = [AUTO_CLUSTER]
@@ -322,24 +325,25 @@ def run_standalone() -> None:
         db_status_var.set("Testing…")
 
         def work() -> object:
+            # A fast auth check — no full cluster listing, which can time out in a
+            # large workspace.
             cli = databricks.resolve_cli(db.cli_path)
             if not cli:
                 return ("err", "databricks CLI not found")
+            user = databricks.current_user(prof, cli=cli)
+            if user is None:
+                return ("err", "CLI found, but auth/profile check failed")
             if cid:
-                return ("cluster", databricks.cluster_state(cid, prof, cli=cli))
-            return ("list", databricks.list_clusters(prof, cli=cli))
+                state = databricks.cluster_state(cid, prof, cli=cli)
+                return ("ok", f"Connected as {user} · cluster {state or 'unknown'}")
+            return ("ok", f"Connected as {user}")
 
         def done(result: object) -> None:
             if isinstance(result, Exception):
                 db_status_var.set("Error testing connection")
                 return
             kind, payload = result  # type: ignore[misc]
-            if kind == "err":
-                db_status_var.set(str(payload))
-            elif kind == "cluster":
-                db_status_var.set(f"Cluster state: {payload or 'unknown'}")
-            else:
-                db_status_var.set(f"OK — {len(payload)} cluster(s) visible")
+            db_status_var.set(str(payload))
 
         _run_async(work, done)
 
