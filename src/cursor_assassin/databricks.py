@@ -71,13 +71,8 @@ def _profile_args(profile: str) -> list[str]:
     return ["--profile", profile] if profile else []
 
 
-def cluster_state(cluster_id: str, profile: str = "", cli: str | None = None) -> str | None:
-    """Return the cluster's current state (e.g. ``RUNNING``), or None if unknown."""
-    if not cluster_id:
-        return None
-    cli = cli or resolve_cli()
-    if not cli:
-        return None
+def _cluster_get(cluster_id: str, profile: str, cli: str) -> dict | None:
+    """Parsed ``clusters get`` JSON for one cluster, or None on any failure."""
     proc = _run(cli, ["clusters", "get", cluster_id, "--output", "json", *_profile_args(profile)])
     if proc is None or proc.returncode != 0 or not proc.stdout.strip():
         return None
@@ -85,8 +80,40 @@ def cluster_state(cluster_id: str, profile: str = "", cli: str | None = None) ->
         data = json.loads(proc.stdout)
     except json.JSONDecodeError:
         return None
+    return data if isinstance(data, dict) else None
+
+
+def cluster_state(cluster_id: str, profile: str = "", cli: str | None = None) -> str | None:
+    """Return the cluster's current state (e.g. ``RUNNING``), or None if unknown."""
+    if not cluster_id:
+        return None
+    cli = cli or resolve_cli()
+    if not cli:
+        return None
+    data = _cluster_get(cluster_id, profile, cli)
+    if data is None:
+        return None
     state = data.get("state")
     return str(state) if isinstance(state, str) else None
+
+
+def cluster_info(cluster_id: str, profile: str = "", cli: str | None = None) -> tuple[str, str]:
+    """Return (cluster_name, state) for one cluster; empty strings if unknown. A single
+    ``clusters get`` — fast, unlike listing every cluster."""
+    if not cluster_id:
+        return ("", "")
+    cli = cli or resolve_cli()
+    if not cli:
+        return ("", "")
+    data = _cluster_get(cluster_id, profile, cli)
+    if data is None:
+        return ("", "")
+    name = data.get("cluster_name")
+    state = data.get("state")
+    return (
+        str(name) if isinstance(name, str) else "",
+        str(state) if isinstance(state, str) else "",
+    )
 
 
 def terminate_cluster(cluster_id: str, profile: str = "", cli: str | None = None) -> bool:
@@ -161,6 +188,28 @@ def list_clusters(
     return out
 
 
+def list_profiles(cli: str | None = None) -> list[str]:
+    """Profile names from ``~/.databrickscfg`` via ``databricks auth profiles``. Lets the
+    settings window offer a dropdown instead of making the user know the exact name."""
+    cli = cli or resolve_cli()
+    if not cli:
+        return []
+    proc = _run(cli, ["auth", "profiles", "--output", "json"])
+    if proc is None or proc.returncode != 0 or not proc.stdout.strip():
+        return []
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return []
+    rows = data.get("profiles", []) if isinstance(data, dict) else data
+    names: list[str] = []
+    if isinstance(rows, list):
+        for p in rows:
+            if isinstance(p, dict) and isinstance(p.get("name"), str) and p["name"]:
+                names.append(p["name"])
+    return names
+
+
 def _iter_cmdlines():
     """Yield (proc, lowercased cmdline string, original-case cmdline string)."""
     for proc in psutil.process_iter(attrs=["cmdline"]):
@@ -174,15 +223,22 @@ def _iter_cmdlines():
         yield proc, joined.lower(), joined
 
 
-def detect_active_cluster_id() -> str | None:
-    """Read the cluster ID from a live ``databricks ssh connect --cluster <id>`` proxy
-    process (what Cursor's Remote Development spawns). None if no such process is found."""
+def detect_active_cluster_ids() -> list[str]:
+    """All cluster IDs from live ``databricks ssh connect --cluster <id>`` proxy processes
+    (what Cursor's Remote Development spawns). Usually one; empty if none are connected."""
+    ids: list[str] = []
     for _proc, low, orig in _iter_cmdlines():
         if "databricks" in low and "ssh" in low and "connect" in low and "--cluster" in low:
             m = _CLUSTER_ARG_RE.search(orig)
-            if m:
-                return m.group(1)
-    return None
+            if m and m.group(1) not in ids:
+                ids.append(m.group(1))
+    return ids
+
+
+def detect_active_cluster_id() -> str | None:
+    """The cluster ID of the first live SSH tunnel, or None if none are connected."""
+    ids = detect_active_cluster_ids()
+    return ids[0] if ids else None
 
 
 def ssh_session_active(cluster_id: str | None = None) -> bool:
