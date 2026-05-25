@@ -25,7 +25,8 @@ RUNNING = "RUNNING"
 # States where a terminate call is pointless — already stopped or on the way down.
 INACTIVE_STATES = {"TERMINATED", "TERMINATING"}
 
-_CLI_TIMEOUT = 15.0  # seconds for any network-bound CLI call
+_CLI_TIMEOUT = 15.0  # seconds for a single-cluster / auth call (get, delete, current-user)
+_LIST_TIMEOUT = 60.0  # listing every cluster can be slow in a large workspace
 _CLUSTER_ARG_RE = re.compile(r"--cluster(?:[=\s]+)([A-Za-z0-9._-]+)")
 
 
@@ -109,13 +110,35 @@ def terminate_cluster(cluster_id: str, profile: str = "", cli: str | None = None
     return True
 
 
-def list_clusters(profile: str = "", cli: str | None = None) -> list[tuple[str, str, str]]:
-    """Return [(cluster_id, cluster_name, state), ...] for the settings dropdown /
-    connection test. Empty list on any failure."""
+def current_user(profile: str = "", cli: str | None = None) -> str | None:
+    """Return the authenticated user's name. A fast way to validate the CLI + auth
+    without listing every cluster (which can time out in a large workspace)."""
+    cli = cli or resolve_cli()
+    if not cli:
+        return None
+    proc = _run(cli, ["current-user", "me", "--output", "json", *_profile_args(profile)])
+    if proc is None or proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+    name = data.get("userName") or data.get("displayName")
+    return str(name) if isinstance(name, str) else None
+
+
+def list_clusters(
+    profile: str = "", cli: str | None = None, timeout: float = _LIST_TIMEOUT
+) -> list[tuple[str, str, str]]:
+    """Return [(cluster_id, cluster_name, state), ...] for the settings dropdown.
+    Empty list on any failure. Uses a generous timeout since listing every cluster is
+    slow in large workspaces."""
     cli = cli or resolve_cli()
     if not cli:
         return []
-    proc = _run(cli, ["clusters", "list", "--output", "json", *_profile_args(profile)])
+    proc = _run(
+        cli, ["clusters", "list", "--output", "json", *_profile_args(profile)], timeout=timeout
+    )
     if proc is None or proc.returncode != 0 or not proc.stdout.strip():
         return []
     try:
