@@ -16,9 +16,9 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            artifact: CursorAssassin-macos.zip
+            artifact: AFKiller-macos.zip
           - os: windows-latest
-            artifact: CursorAssassin-windows.exe
+            artifact: AFKiller-windows.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -37,18 +37,18 @@ jobs:
         run: |
           uv run pyinstaller \
             --noconfirm \
-            --name CursorAssassin \
+            --name AFKiller \
             --windowed \
-            --osx-bundle-identifier com.skad00sh.cursor-assassin \
+            --osx-bundle-identifier com.skad00sh.afkiller \
             --collect-all pystray \
             --collect-all PIL \
-            src/cursor_assassin/__main__.py
+            src/afkiller/__main__.py
           # Hide Dock icon — pure menu-bar app.
-          plutil -insert LSUIElement -bool true "dist/CursorAssassin.app/Contents/Info.plist"
+          plutil -insert LSUIElement -bool true "dist/AFKiller.app/Contents/Info.plist"
           # Editing the plist invalidates PyInstaller's signature; re-sign ad-hoc
           # or Gatekeeper reports the app as "damaged" on download.
-          codesign --force --deep --sign - "dist/CursorAssassin.app"
-          ditto -c -k --sequesterRsrc --keepParent "dist/CursorAssassin.app" "${{ matrix.artifact }}"
+          codesign --force --deep --sign - "dist/AFKiller.app"
+          ditto -c -k --sequesterRsrc --keepParent "dist/AFKiller.app" "${{ matrix.artifact }}"
 
       - name: Build Windows .exe
         if: runner.os == 'Windows'
@@ -56,13 +56,13 @@ jobs:
         run: |
           uv run pyinstaller \
             --noconfirm \
-            --name CursorAssassin \
+            --name AFKiller \
             --windowed \
             --onefile \
             --collect-all pystray \
             --collect-all PIL \
-            src/cursor_assassin/__main__.py
-          mv "./dist/CursorAssassin.exe" "${{ matrix.artifact }}"
+            src/afkiller/__main__.py
+          mv "./dist/AFKiller.exe" "${{ matrix.artifact }}"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

@@ -15,9 +15,9 @@ import time
 import tkinter as tk
 from tkinter import ttk
 
-from cursor_assassin import config as cfg_mod
-from cursor_assassin import databricks, process
-from cursor_assassin.config import (
+from afkiller import config as cfg_mod
+from afkiller import databricks, process
+from afkiller.config import (
     DATABRICKS_DELAY_PRESETS,
     PAUSE_DURATION_SEC,
     TRIGGER_KEYS,
@@ -59,7 +59,7 @@ def run_standalone() -> None:
             process.quit_graceful()
 
     root = tk.Tk()
-    root.title("Cursor Assassin — Settings")
+    root.title("AFKiller — Settings")
     root.resizable(False, False)
     try:
         root.attributes("-topmost", True)

@@ -62,7 +62,7 @@ def _run(cli: str, args: list[str], *, timeout: float = _CLI_TIMEOUT) -> subproc
             timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        print(f"[cursor-assassin] databricks CLI call failed: {e}", file=sys.stderr)
+        print(f"[afkiller] databricks CLI call failed: {e}", file=sys.stderr)
         return None
 
 
@@ -129,7 +129,7 @@ def terminate_cluster(cluster_id: str, profile: str = "", cli: str | None = None
         return False
     if proc.returncode != 0:
         print(
-            f"[cursor-assassin] cluster terminate failed (rc={proc.returncode}): "
+            f"[afkiller] cluster terminate failed (rc={proc.returncode}): "
             f"{proc.stderr.strip()}",
             file=sys.stderr,
         )

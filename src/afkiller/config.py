@@ -8,7 +8,7 @@ from pathlib import Path
 
 from platformdirs import user_config_dir
 
-APP_NAME = "cursor-assassin"
+APP_NAME = "afkiller"
 
 
 @dataclass
@@ -105,9 +105,9 @@ def write_status(text: str) -> None:
 
 def read_status() -> str:
     try:
-        return status_path().read_text(encoding="utf-8").strip() or "Cursor Assassin"
+        return status_path().read_text(encoding="utf-8").strip() or "AFKiller"
     except OSError:
-        return "Cursor Assassin"
+        return "AFKiller"
 
 
 def load() -> Config:

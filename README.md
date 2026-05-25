@@ -1,4 +1,4 @@
-# cursor-assassin
+# afkiller
 
 Tray app that auto-closes [Cursor](https://www.cursor.com/) when you're not actively using it, so a forgotten Remote-SSH session doesn't keep a billable Databricks cluster alive overnight.
 
@@ -59,10 +59,10 @@ Requires [`uv`](https://github.com/astral-sh/uv) and Python 3.12.
 
 ```bash
 git clone <this repo>
-cd cursor-assassin
+cd afkiller
 uv venv --python 3.12
 uv sync
-uv run cursor-assassin
+uv run afkiller
 ```
 
 A red "CA" badge appears in the menu bar (macOS) or notification area (Windows). Right-click it for the menu.
@@ -79,31 +79,31 @@ Pause 30 min
 ─────────────────────
 Quit Cursor now
 Stop cluster now        ← only when Databricks cluster stop is enabled
-Quit Cursor Assassin
+Quit AFKiller
 ```
 
 All changes persist immediately to the config file:
 
-- **macOS:** `~/Library/Application Support/cursor-assassin/config.toml`
-- **Windows:** `%APPDATA%\cursor-assassin\config.toml`
+- **macOS:** `~/Library/Application Support/afkiller/config.toml`
+- **Windows:** `%APPDATA%\afkiller\config.toml`
 
 ## Auto-start on login
 
-**macOS** — drop this LaunchAgent at `~/Library/LaunchAgents/com.cursor-assassin.plist` (replace the path to `uv` if different):
+**macOS** — drop this LaunchAgent at `~/Library/LaunchAgents/com.afkiller.plist` (replace the path to `uv` if different):
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.cursor-assassin</string>
+  <key>Label</key><string>com.afkiller</string>
   <key>ProgramArguments</key>
   <array>
     <string>/Users/YOU/.local/bin/uv</string>
     <string>run</string>
     <string>--directory</string>
-    <string>/Users/YOU/Desktop/cursor-assassin</string>
-    <string>cursor-assassin</string>
+    <string>/Users/YOU/Desktop/afkiller</string>
+    <string>afkiller</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -111,20 +111,20 @@ All changes persist immediately to the config file:
 </plist>
 ```
 
-Then `launchctl load ~/Library/LaunchAgents/com.cursor-assassin.plist`.
+Then `launchctl load ~/Library/LaunchAgents/com.afkiller.plist`.
 
 **Windows** — `Win+R` → `shell:startup` → drop a shortcut whose target is:
 
 ```
-"C:\Users\YOU\.local\bin\uv.exe" run --directory "C:\path\to\cursor-assassin" cursor-assassin
+"C:\Users\YOU\.local\bin\uv.exe" run --directory "C:\path\to\afkiller" afkiller
 ```
 
 ## Releasing
 
 Tagged pushes trigger `.github/workflows/release.yml`, which uses PyInstaller on `macos-latest` and `windows-latest` runners to build:
 
-- `CursorAssassin-macos.zip` — contains `CursorAssassin.app` (menu-bar-only via `LSUIElement`)
-- `CursorAssassin-windows.zip` — contains `CursorAssassin.exe`
+- `AFKiller-macos.zip` — contains `AFKiller.app` (menu-bar-only via `LSUIElement`)
+- `AFKiller-windows.zip` — contains `AFKiller.exe`
 
 Both are attached to a GitHub Release with auto-generated notes.
 
@@ -141,10 +141,10 @@ To build locally for a single platform:
 
 ```bash
 uv sync --group build
-uv run pyinstaller --noconfirm --name CursorAssassin --windowed \
+uv run pyinstaller --noconfirm --name AFKiller --windowed \
   --collect-all pystray --collect-all PIL \
-  src/cursor_assassin/__main__.py
-# macOS only: plutil -insert LSUIElement -bool true "dist/CursorAssassin.app/Contents/Info.plist"
+  src/afkiller/__main__.py
+# macOS only: plutil -insert LSUIElement -bool true "dist/AFKiller.app/Contents/Info.plist"
 ```
 
 ## License

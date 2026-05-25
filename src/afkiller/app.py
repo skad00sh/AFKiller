@@ -1,4 +1,4 @@
-"""Cursor Assassin orchestrator: watcher thread + tray icon."""
+"""AFKiller orchestrator: watcher thread + tray icon."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from typing import Optional
 
 import pystray
 
-from cursor_assassin import config as cfg_mod
-from cursor_assassin import databricks, focus, idle, process, settings, warning
-from cursor_assassin.config import PAUSE_DURATION_SEC
-from cursor_assassin.tray import build_menu, make_icon_image
+from afkiller import config as cfg_mod
+from afkiller import databricks, focus, idle, process, settings, warning
+from afkiller.config import PAUSE_DURATION_SEC
+from afkiller.tray import build_menu, make_icon_image
 
 TICK_SECONDS = 1.0
 # Re-scan for the live Databricks SSH proxy process every N ticks (not every tick).
@@ -49,9 +49,9 @@ class App:
         self._countdown_text = "Starting..."
 
         self.icon = pystray.Icon(
-            "cursor-assassin",
+            "afkiller",
             icon=make_icon_image(),
-            title="Cursor Assassin",
+            title="AFKiller",
             menu=build_menu(
                 countdown_text=lambda: self._countdown_text,
                 open_settings=self._open_settings,
@@ -103,7 +103,7 @@ class App:
         """Command to relaunch this app in a sub-mode, in dev or frozen builds."""
         if getattr(sys, "frozen", False):
             return [sys.executable, *extra]
-        return [sys.executable, "-m", "cursor_assassin", *extra]
+        return [sys.executable, "-m", "afkiller", *extra]
 
     def _open_settings(self) -> None:
         if self._settings_proc is not None and self._settings_proc.poll() is None:
@@ -111,7 +111,7 @@ class App:
         try:
             self._settings_proc = subprocess.Popen(self._self_cmd("--settings"))
         except OSError as e:
-            print(f"[cursor-assassin] failed to open settings: {e}", file=sys.stderr)
+            print(f"[afkiller] failed to open settings: {e}", file=sys.stderr)
 
     def _quit_cursor_now(self) -> None:
         if self.cfg.close_mode == "force_kill":
@@ -132,12 +132,12 @@ class App:
             or databricks.detect_active_cluster_id()
         )
         if not target:
-            self._notify("Cursor Assassin", "No Databricks cluster detected to stop.")
+            self._notify("AFKiller", "No Databricks cluster detected to stop.")
             return
         ok = databricks.terminate_cluster(target, db.profile)
         if db.notify:
             self._notify(
-                "Cursor Assassin",
+                "AFKiller",
                 f"Stopping Databricks cluster {target}"
                 if ok
                 else f"Failed to stop cluster {target}",
@@ -217,7 +217,7 @@ class App:
             proc = subprocess.run(self._self_cmd("--warn", str(self.cfg.warning_seconds)))
             cancelled = proc.returncode != 0
         except OSError as e:
-            print(f"[cursor-assassin] failed to show warning: {e}", file=sys.stderr)
+            print(f"[afkiller] failed to show warning: {e}", file=sys.stderr)
 
         if cancelled:
             # Keep Cursor open — reset *all* trigger clocks so we don't re-fire.
@@ -264,7 +264,7 @@ class App:
         self._set_countdown("Stopping cluster…")
         if databricks.terminate_cluster(target, db.profile):
             if db.notify:
-                self._notify("Cursor Assassin", f"Stopping Databricks cluster {target}")
+                self._notify("AFKiller", f"Stopping Databricks cluster {target}")
             self.cursor_closed_at = None  # done; don't re-fire
         else:
             # CLI missing/unauth/network error — retry after another full window, no spam.
@@ -276,7 +276,7 @@ class App:
                 self._tick()
             except Exception as e:
                 # Never let an exception kill the watcher thread.
-                print(f"[cursor-assassin] watcher tick error: {e}", file=sys.stderr)
+                print(f"[afkiller] watcher tick error: {e}", file=sys.stderr)
             self.stop_event.wait(TICK_SECONDS)
 
     def _tick(self) -> None:
@@ -349,7 +349,7 @@ class App:
         cfg_mod.write_status(text)  # publish for the settings window
         # Tooltip on hover (Windows) / menu bar title hint (macOS limited).
         try:
-            self.icon.title = f"Cursor Assassin — {text}"
+            self.icon.title = f"AFKiller — {text}"
         except Exception:
             pass
         self._refresh_menu()

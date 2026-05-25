@@ -49,5 +49,5 @@ def build_menu(
             lambda _icon, _item: stop_cluster_now(),
             visible=lambda _item: databricks_enabled(),
         ),
-        pystray.MenuItem("Quit Cursor Assassin", lambda _icon, _item: quit_app()),
+        pystray.MenuItem("Quit AFKiller", lambda _icon, _item: quit_app()),
     )

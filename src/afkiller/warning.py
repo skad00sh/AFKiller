@@ -12,7 +12,7 @@ def run_standalone(seconds: int) -> bool:
     """Show the countdown on this process's main thread and block until it ends.
     Returns True if the user cancelled (keep Cursor open), False if it ran out."""
     root = tk.Tk()
-    root.title("Cursor Assassin")
+    root.title("AFKiller")
     root.attributes("-topmost", True)
     try:
         root.lift()
