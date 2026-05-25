@@ -88,4 +88,6 @@ jobs:
           files: artifacts/*
           generate_release_notes: true
           draft: false
-          prerelease: false
+          # Tags with a pre-release suffix (e.g. v0.2.0-rc1, v0.2.0-beta) publish as a
+          # pre-release; clean tags (v0.2.0) publish as a full release.
+          prerelease: ${{ contains(github.ref_name, '-') }}
