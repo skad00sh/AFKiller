@@ -241,6 +241,27 @@ def detect_active_cluster_id() -> str | None:
     return ids[0] if ids else None
 
 
+def scan_sessions() -> tuple[list[str], bool]:
+    """One process scan returning ``(cluster_ids, ssh_active)``.
+
+    ``cluster_ids`` come from live ``databricks ssh connect --cluster <id>`` proxies (what
+    Cursor's Remote Development spawns); ``ssh_active`` is True if any such proxy — or a raw
+    ``ssh ... -p 2200`` to a cluster driver — is alive. Combines what
+    ``detect_active_cluster_ids()`` and ``ssh_session_active()`` do in a single pass, since
+    the watcher needs both every tick."""
+    ids: list[str] = []
+    active = False
+    for _proc, low, orig in _iter_cmdlines():
+        if "databricks" in low and "ssh" in low and "connect" in low and "--cluster" in low:
+            active = True
+            m = _CLUSTER_ARG_RE.search(orig)
+            if m and m.group(1) not in ids:
+                ids.append(m.group(1))
+        elif low.split(" ", 1)[0].endswith("ssh") and " 2200" in f" {low}":
+            active = True
+    return ids, active
+
+
 def ssh_session_active(cluster_id: str | None = None) -> bool:
     """True if an SSH session to the cluster appears active, so we must not stop it.
 

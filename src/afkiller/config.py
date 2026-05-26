@@ -35,6 +35,9 @@ class DatabricksConfig:
 class Config:
     close_mode: str = "graceful_warn"  # or "force_kill"
     warning_seconds: int = 30
+    # Only close Cursor while it holds a remote SSH session (a Databricks Remote Dev tunnel
+    # or a raw ssh to the driver). Closing it otherwise frees no cluster, so it's pointless.
+    close_only_when_ssh_connected: bool = True
     # Wall-clock epoch (time.time()) until which triggers are paused; 0 = not
     # paused. Stored on disk so the separate settings process can drive pause.
     paused_until_epoch: float = 0.0
@@ -127,6 +130,9 @@ def load() -> Config:
     warn = data.get("warning_seconds")
     if isinstance(warn, int) and warn > 0:
         cfg.warning_seconds = warn
+    ssh_gate = data.get("close_only_when_ssh_connected")
+    if isinstance(ssh_gate, bool):
+        cfg.close_only_when_ssh_connected = ssh_gate
     paused = data.get("paused_until_epoch")
     if isinstance(paused, (int, float)) and paused > 0:
         cfg.paused_until_epoch = float(paused)
@@ -175,6 +181,8 @@ def save(cfg: Config) -> None:
     lines = [
         f'close_mode = "{cfg.close_mode}"',
         f"warning_seconds = {cfg.warning_seconds}",
+        f"close_only_when_ssh_connected = "
+        f"{'true' if cfg.close_only_when_ssh_connected else 'false'}",
         f"paused_until_epoch = {cfg.paused_until_epoch}",
         "",
     ]

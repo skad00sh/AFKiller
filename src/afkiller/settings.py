@@ -122,6 +122,18 @@ def run_standalone() -> None:
         combo.grid(row=row, column=1, sticky="e", padx=(12, 0), pady=2)
         row += 1
 
+    ssh_gate_var = tk.BooleanVar(value=cfg.close_only_when_ssh_connected)
+
+    def _on_ssh_gate() -> None:
+        cfg.close_only_when_ssh_connected = ssh_gate_var.get()
+        cfg_mod.save(cfg)
+
+    ttk.Checkbutton(
+        frm, text="Only close Cursor when connected over SSH",
+        variable=ssh_gate_var, command=_on_ssh_gate,
+    ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(6, 0))
+    row += 1
+
     ttk.Separator(frm, orient="horizontal").grid(
         row=row, column=0, columnspan=2, sticky="ew", pady=(10, 10)
     )

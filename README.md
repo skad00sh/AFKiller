@@ -20,6 +20,8 @@ Three independent triggers (each can be toggled on/off and given its own timer f
 
 Whichever trigger trips first wins. Defaults: System idle = 30 min, the rest disabled.
 
+By default, **Cursor is only closed while it's holding a remote SSH session** (a Databricks Remote Development tunnel, or a raw `ssh` to the driver) — closing it otherwise wouldn't free any cluster, so there's no point. Turn off *"Only close Cursor when connected over SSH"* in Settings if you'd rather have it close on idle regardless.
+
 ## Close mode
 
 Pick one in the tray menu:

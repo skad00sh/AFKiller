@@ -44,6 +44,9 @@ class App:
         self.cursor_closed_at: Optional[float] = None
         self.last_connected_cluster_id: Optional[str] = None
         self._db_detect_counter = 0
+        # Whether a remote SSH session is currently attached (None = unknown / not running).
+        # Refreshed on the same throttled cadence as cluster detection.
+        self._ssh_active: Optional[bool] = None
 
         # Last computed remaining-seconds across enabled triggers.
         self._countdown_text = "Starting..."
@@ -304,16 +307,20 @@ class App:
         if running and focus.is_cursor_foreground():
             self.last_cursor_foreground_at = now
 
-        # While connected, remember which cluster Cursor's SSH tunnel is using, so we can
-        # stop it after Cursor closes (the proxy process is usually gone by then).
+        # While Cursor runs, periodically scan for the live remote SSH session. It serves two
+        # purposes: remembering which cluster the tunnel uses (to stop it after Cursor closes,
+        # when the proxy process is usually gone) and gating whether we may close Cursor at all
+        # — closing it with no session attached frees no cluster, so it's pointless.
         db = self.cfg.databricks
-        if running and db.enabled and not db.cluster_id:
+        if running and (self.cfg.close_only_when_ssh_connected or db.enabled):
             self._db_detect_counter += 1
-            if self._db_detect_counter >= DB_DETECT_INTERVAL_TICKS:
+            if self._ssh_active is None or self._db_detect_counter >= DB_DETECT_INTERVAL_TICKS:
                 self._db_detect_counter = 0
-                cid = databricks.detect_active_cluster_id()
-                if cid:
-                    self.last_connected_cluster_id = cid
+                ids, self._ssh_active = databricks.scan_sessions()
+                if db.enabled and not db.cluster_id and ids:
+                    self.last_connected_cluster_id = ids[0]
+        elif not running:
+            self._ssh_active = None
 
         # Paused: show paused text and skip trigger evaluation.
         if self._is_paused():
@@ -323,6 +330,13 @@ class App:
 
         if not running:
             self._maybe_stop_cluster(now)
+            return
+
+        # Only close Cursor while it holds a remote SSH session. Without one, closing it frees
+        # no cluster — so hold off and keep the trigger clocks reset until a session connects.
+        if self.cfg.close_only_when_ssh_connected and not self._ssh_active:
+            self._reset_trigger_timers(now)
+            self._set_countdown("Cursor open (no SSH session)")
             return
 
         remaining = self._remaining_for_enabled_triggers(now)
