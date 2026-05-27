@@ -19,6 +19,15 @@ from afkiller.tray import build_menu, make_icon_image
 TICK_SECONDS = 1.0
 # Re-scan for the live Databricks SSH proxy process every N ticks (not every tick).
 DB_DETECT_INTERVAL_TICKS = 5
+# Re-poll the cluster's runtime (a ~1-2s `clusters get`) for the DBU meter every N ticks.
+COST_POLL_INTERVAL_TICKS = 30
+
+
+def _fmt_uptime(seconds: float) -> str:
+    """Compact duration like '2h13m' or '7m'."""
+    minutes = int(seconds // 60)
+    h, m = divmod(minutes, 60)
+    return f"{h}h{m:02d}m" if h else f"{m}m"
 
 
 @dataclass
@@ -47,6 +56,17 @@ class App:
         # Whether a remote SSH session is currently attached (None = unknown / not running).
         # Refreshed on the same throttled cadence as cluster detection.
         self._ssh_active: Optional[bool] = None
+
+        # DBU cost meter: a cached cluster-runtime snapshot, refreshed off-thread on a slow
+        # cadence (clusters-get is a network call). Uptime is extrapolated between polls from
+        # the monotonic timestamp so the meter climbs smoothly.
+        self._cluster_runtime: Optional[databricks.ClusterRuntime] = None
+        self._cluster_runtime_at = 0.0  # monotonic time the snapshot was taken
+        # Seed at the interval so the first eligible tick polls immediately; thereafter it
+        # polls every COST_POLL_INTERVAL_TICKS regardless of success, so a failing CLI call
+        # retries on the slow cadence instead of every tick.
+        self._cost_poll_counter = COST_POLL_INTERVAL_TICKS
+        self._cost_poll_inflight = False
 
         # Last computed remaining-seconds across enabled triggers.
         self._countdown_text = "Starting..."
@@ -273,6 +293,52 @@ class App:
             # CLI missing/unauth/network error — retry after another full window, no spam.
             self.cursor_closed_at = now
 
+    # ----- DBU cost meter -----
+
+    def _maybe_poll_runtime(self) -> None:
+        """Refresh the cached cluster runtime off-thread, on a slow cadence, when cost
+        tracking is on and we know which cluster to look at. One poll in flight at a time."""
+        cost = self.cfg.cost
+        target = self.cfg.databricks.cluster_id or self.last_connected_cluster_id
+        if not cost.enabled or not target or self._cost_poll_inflight:
+            return
+        self._cost_poll_counter += 1
+        if self._cost_poll_counter >= COST_POLL_INTERVAL_TICKS:
+            self._cost_poll_counter = 0
+            self._cost_poll_inflight = True
+            threading.Thread(target=self._do_poll_runtime, args=(target,), daemon=True).start()
+
+    def _do_poll_runtime(self, target: str) -> None:
+        try:
+            db = self.cfg.databricks
+            rt = databricks.cluster_runtime(
+                target, db.profile, cli=databricks.resolve_cli(db.cli_path)
+            )
+            with self.lock:
+                self._cluster_runtime = rt
+                self._cluster_runtime_at = time.monotonic()
+        finally:
+            self._cost_poll_inflight = False
+
+    def cost_enabled(self) -> bool:
+        """Whether to show the cost line in the tray menu."""
+        return self.cfg.cost.enabled and self.cfg.cost.show_in_tray
+
+    def cost_text(self) -> str:
+        """Tray line for the DBU meter, read from the cached runtime snapshot."""
+        c = self.cfg.cost
+        rt = self._cluster_runtime
+        if rt is None:
+            return "Cluster cost: unknown"
+        if rt.state != databricks.RUNNING or rt.uptime_seconds is None:
+            return "Cluster not running"
+        uptime = rt.uptime_seconds + max(0.0, time.monotonic() - self._cluster_runtime_at)
+        dur = _fmt_uptime(uptime)
+        if c.dbu_per_hour <= 0:
+            return f"Running {dur} · set DBU/hr in Settings"
+        dbus = uptime / 3600.0 * c.dbu_per_hour
+        return f"≈ {dbus:.2f} DBU · {dur}"
+
     def _watcher(self) -> None:
         while not self.stop_event.is_set():
             try:
@@ -312,15 +378,21 @@ class App:
         # when the proxy process is usually gone) and gating whether we may close Cursor at all
         # — closing it with no session attached frees no cluster, so it's pointless.
         db = self.cfg.databricks
-        if running and (self.cfg.close_only_when_ssh_connected or db.enabled):
+        cost = self.cfg.cost
+        if running and (self.cfg.close_only_when_ssh_connected or db.enabled or cost.enabled):
             self._db_detect_counter += 1
             if self._ssh_active is None or self._db_detect_counter >= DB_DETECT_INTERVAL_TICKS:
                 self._db_detect_counter = 0
                 ids, self._ssh_active = databricks.scan_sessions()
-                if db.enabled and not db.cluster_id and ids:
+                if (db.enabled or cost.enabled) and not db.cluster_id and ids:
                     self.last_connected_cluster_id = ids[0]
         elif not running:
             self._ssh_active = None
+
+        # DBU meter: keep the cached cluster runtime fresh (off-thread, slow cadence) so the
+        # tray can show consumption. Runs whether Cursor is open or closed (the cluster bills
+        # either way) as long as we know which cluster to look at.
+        self._maybe_poll_runtime()
 
         # Paused: show paused text and skip trigger evaluation.
         if self._is_paused():
