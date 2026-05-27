@@ -56,6 +56,9 @@ class App:
         # Whether a remote SSH session is currently attached (None = unknown / not running).
         # Refreshed on the same throttled cadence as cluster detection.
         self._ssh_active: Optional[bool] = None
+        # Last SSH-connected state we notified about (None = no baseline yet, so the first
+        # reading is adopted silently and only later changes pop a notification).
+        self._ssh_notified: Optional[bool] = None
 
         # DBU cost meter: a cached cluster-runtime snapshot, refreshed off-thread on a slow
         # cadence (clusters-get is a network call). Uptime is extrapolated between polls from
@@ -361,6 +364,26 @@ class App:
         finally:
             self._cost_poll_inflight = False
 
+    def _maybe_ssh_change_notify(self) -> None:
+        """Pop a notification when the SSH session connects or disconnects. Tracks the last
+        notified state so it fires only on a real edge; the first reading sets the baseline
+        silently (so an already-open session at startup doesn't trigger a stray popup)."""
+        connected = self._ssh_active is True
+        if not self.cfg.notify_on_ssh_change:
+            self._ssh_notified = connected  # keep baseline current so re-enabling is quiet
+            return
+        if self._ssh_notified is None:
+            self._ssh_notified = connected  # establish baseline, no notification
+            return
+        if connected == self._ssh_notified:
+            return
+        self._ssh_notified = connected
+        if connected:
+            target = self.cfg.databricks.cluster_id or self.last_connected_cluster_id or "cluster"
+            self._notify("AFKiller", f"SSH connected to {target} — AFKiller is watching.")
+        else:
+            self._notify("AFKiller", "SSH session closed.")
+
     def _maybe_idle_alert(self, now: float) -> None:
         """Fire one notification when the cluster has been RUNNING with no SSH session for the
         configured window. Independent of auto-stop — useful when auto-stop is off, or to
@@ -450,7 +473,12 @@ class App:
         # — closing it with no session attached frees no cluster, so it's pointless.
         db = self.cfg.databricks
         cost = self.cfg.cost
-        want_detect = self.cfg.close_only_when_ssh_connected or db.enabled or cost.enabled
+        want_detect = (
+            self.cfg.close_only_when_ssh_connected
+            or self.cfg.notify_on_ssh_change
+            or db.enabled
+            or cost.enabled
+        )
         # While Cursor runs we need the SSH signal for the close gate; the idle alert also
         # needs it after Cursor closes (a cluster can sit idle with no tunnel), so keep
         # scanning when that's on.
@@ -463,6 +491,10 @@ class App:
                     self.last_connected_cluster_id = ids[0]
         elif not running:
             self._ssh_active = None
+
+        # Notify on SSH connect/disconnect (rising/falling edge of the signal above; closing
+        # Cursor flips it to None == disconnected, which counts as a falling edge).
+        self._maybe_ssh_change_notify()
 
         # DBU meter: keep the cached cluster runtime fresh (off-thread, slow cadence) so the
         # tray can show consumption. Runs whether Cursor is open or closed (the cluster bills

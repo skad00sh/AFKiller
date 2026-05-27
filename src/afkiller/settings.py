@@ -134,6 +134,18 @@ def run_standalone() -> None:
     ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(6, 0))
     row += 1
 
+    ssh_notify_var = tk.BooleanVar(value=cfg.notify_on_ssh_change)
+
+    def _on_ssh_notify() -> None:
+        cfg.notify_on_ssh_change = ssh_notify_var.get()
+        cfg_mod.save(cfg)
+
+    ttk.Checkbutton(
+        frm, text="Notify on SSH connect / disconnect",
+        variable=ssh_notify_var, command=_on_ssh_notify,
+    ).grid(row=row, column=0, columnspan=2, sticky="w")
+    row += 1
+
     ttk.Separator(frm, orient="horizontal").grid(
         row=row, column=0, columnspan=2, sticky="ew", pady=(10, 10)
     )

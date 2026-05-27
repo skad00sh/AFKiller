@@ -57,6 +57,8 @@ class Config:
     # Only close Cursor while it holds a remote SSH session (a Databricks Remote Dev tunnel
     # or a raw ssh to the driver). Closing it otherwise frees no cluster, so it's pointless.
     close_only_when_ssh_connected: bool = True
+    # Pop a tray notification when a remote SSH session connects or disconnects.
+    notify_on_ssh_change: bool = True
     # Wall-clock epoch (time.time()) until which triggers are paused; 0 = not
     # paused. Stored on disk so the separate settings process can drive pause.
     paused_until_epoch: float = 0.0
@@ -205,6 +207,9 @@ def load() -> Config:
     ssh_gate = data.get("close_only_when_ssh_connected")
     if isinstance(ssh_gate, bool):
         cfg.close_only_when_ssh_connected = ssh_gate
+    ssh_notify = data.get("notify_on_ssh_change")
+    if isinstance(ssh_notify, bool):
+        cfg.notify_on_ssh_change = ssh_notify
     paused = data.get("paused_until_epoch")
     if isinstance(paused, (int, float)) and paused > 0:
         cfg.paused_until_epoch = float(paused)
@@ -271,6 +276,7 @@ def save(cfg: Config) -> None:
         f"warning_seconds = {cfg.warning_seconds}",
         f"close_only_when_ssh_connected = "
         f"{'true' if cfg.close_only_when_ssh_connected else 'false'}",
+        f"notify_on_ssh_change = {'true' if cfg.notify_on_ssh_change else 'false'}",
         f"paused_until_epoch = {cfg.paused_until_epoch}",
         "",
     ]
