@@ -8,6 +8,8 @@ from pathlib import Path
 
 from platformdirs import user_config_dir
 
+from afkiller import editors
+
 APP_NAME = "afkiller"
 
 
@@ -49,6 +51,8 @@ class Config:
         }
     )
     databricks: DatabricksConfig = field(default_factory=DatabricksConfig)
+    # Which editors to watch/close (keys from editors.KEYS); default = all known editors.
+    watched_editors: list[str] = field(default_factory=lambda: list(editors.KEYS))
 
 
 VALID_CLOSE_MODES = {"graceful_warn", "force_kill"}
@@ -56,7 +60,7 @@ TRIGGER_KEYS = ("system_idle", "cursor_unfocused", "hard_cap")
 
 TRIGGER_LABELS: dict[str, str] = {
     "system_idle": "System idle",
-    "cursor_unfocused": "Cursor unfocused",
+    "cursor_unfocused": "Editor unfocused",
     "hard_cap": "Hard cap",
 }
 
@@ -149,6 +153,12 @@ def load() -> Config:
         if isinstance(thr, int) and thr > 0:
             existing.threshold_minutes = thr
 
+    eds = data.get("editors")
+    if isinstance(eds, dict):
+        # A known editor counts as watched unless explicitly disabled; unknown/missing keys
+        # default to enabled (so newly-added editors are on by default after an upgrade).
+        cfg.watched_editors = [k for k in editors.KEYS if eds.get(k, True) is not False]
+
     db = data.get("databricks")
     if isinstance(db, dict):
         d = cfg.databricks
@@ -191,6 +201,11 @@ def save(cfg: Config) -> None:
         lines.append(f"enabled = {'true' if trig.enabled else 'false'}")
         lines.append(f"threshold_minutes = {trig.threshold_minutes}")
         lines.append("")
+
+    lines.append("[editors]")
+    for k in editors.KEYS:
+        lines.append(f"{k} = {'true' if k in cfg.watched_editors else 'false'}")
+    lines.append("")
 
     d = cfg.databricks
     lines.append("[databricks]")
