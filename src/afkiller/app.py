@@ -77,6 +77,8 @@ class App:
             title="AFKiller",
             menu=build_menu(
                 countdown_text=lambda: self._countdown_text,
+                cost_text=self.cost_text,
+                cost_enabled=self.cost_enabled,
                 open_settings=self._open_settings,
                 toggle_pause=self._toggle_pause,
                 is_paused=self._is_paused,
