@@ -17,6 +17,8 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+from dataclasses import dataclass
 
 import psutil
 
@@ -113,6 +115,54 @@ def cluster_info(cluster_id: str, profile: str = "", cli: str | None = None) -> 
     return (
         str(name) if isinstance(name, str) else "",
         str(state) if isinstance(state, str) else "",
+    )
+
+
+@dataclass
+class ClusterRuntime:
+    """Snapshot of a cluster's runtime, for the DBU cost meter / saved estimate."""
+
+    state: str  # e.g. "RUNNING", "TERMINATED"; "" if unknown
+    uptime_seconds: float | None  # since last start; None if no usable timestamp
+    autotermination_minutes: int | None  # the cluster's own idle-shutdown window; None if unset
+    name: str  # cluster_name, or "" if unknown
+
+
+def cluster_runtime(cluster_id: str, profile: str = "", cli: str | None = None) -> ClusterRuntime | None:
+    """One ``clusters get`` returning the bits the cost meter needs: state, uptime, and the
+    cluster's own auto-termination window. ``None`` on any failure (never raises).
+
+    Uptime is measured from ``last_restarted_time`` (the current run) when present, else
+    ``start_time`` — both epoch-milliseconds. A missing/zero timestamp yields ``uptime_seconds
+    = None`` rather than a bogus huge value."""
+    if not cluster_id:
+        return None
+    cli = cli or resolve_cli()
+    if not cli:
+        return None
+    data = _cluster_get(cluster_id, profile, cli)
+    if data is None:
+        return None
+
+    state = data.get("state")
+    state = str(state) if isinstance(state, str) else ""
+
+    name = data.get("cluster_name")
+    name = str(name) if isinstance(name, str) else ""
+
+    autoterm = data.get("autotermination_minutes")
+    autoterm = autoterm if isinstance(autoterm, int) and not isinstance(autoterm, bool) else None
+
+    ts_ms = data.get("last_restarted_time") or data.get("start_time")
+    uptime_seconds: float | None = None
+    if isinstance(ts_ms, (int, float)) and not isinstance(ts_ms, bool) and ts_ms > 0:
+        uptime_seconds = max(0.0, time.time() - ts_ms / 1000.0)
+
+    return ClusterRuntime(
+        state=state,
+        uptime_seconds=uptime_seconds,
+        autotermination_minutes=autoterm,
+        name=name,
     )
 
 
