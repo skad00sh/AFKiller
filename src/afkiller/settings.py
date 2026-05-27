@@ -72,7 +72,7 @@ def run_standalone() -> None:
     # below is added exactly as before.
     root.rowconfigure(0, weight=1)
     root.columnconfigure(0, weight=1)
-    canvas = tk.Canvas(root, highlightthickness=0)
+    canvas = tk.Canvas(root, highlightthickness=0, yscrollincrement=20)
     vsb = ttk.Scrollbar(root, orient="vertical", command=canvas.yview)
     canvas.configure(yscrollcommand=vsb.set)
     canvas.grid(row=0, column=0, sticky="nsew")
@@ -86,7 +86,12 @@ def run_standalone() -> None:
     canvas.bind("<Configure>", lambda e: canvas.itemconfigure(_frm_id, width=e.width))
 
     def _on_wheel(event: tk.Event) -> None:
-        canvas.yview_scroll(-1 * int(event.delta), "units")  # macOS delta is small +/- ints
+        # macOS trackpad deltas can be small/fractional — int() would truncate to 0 and never
+        # scroll. Step a fixed amount per event by direction instead of scaling by magnitude.
+        if event.delta > 0:
+            canvas.yview_scroll(-1, "units")
+        elif event.delta < 0:
+            canvas.yview_scroll(1, "units")
 
     canvas.bind_all("<MouseWheel>", _on_wheel)
 
