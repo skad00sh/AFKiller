@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tomllib
 from dataclasses import asdict, dataclass, field
+from datetime import date
 from pathlib import Path
 
 from platformdirs import user_config_dir
@@ -34,12 +35,32 @@ class DatabricksConfig:
 
 
 @dataclass
+class CostConfig:
+    enabled: bool = True
+    dbu_per_hour: float = 0.0  # flat DBU/hr for the connected cluster; 0 = unknown
+    show_in_tray: bool = True
+    idle_alert_enabled: bool = False  # notify when a RUNNING cluster sits idle with no SSH
+    idle_alert_minutes: int = 15
+
+
+@dataclass
+class Stats:
+    """Running totals, persisted separately from settings (see stats_path)."""
+
+    total_dbus_saved: float = 0.0
+    stops_count: int = 0
+    since: str = ""  # ISO date counting started / was last reset
+
+
+@dataclass
 class Config:
     close_mode: str = "graceful_warn"  # or "force_kill"
     warning_seconds: int = 30
     # Only close Cursor while it holds a remote SSH session (a Databricks Remote Dev tunnel
     # or a raw ssh to the driver). Closing it otherwise frees no cluster, so it's pointless.
     close_only_when_ssh_connected: bool = True
+    # Pop a tray notification when a remote SSH session connects or disconnects.
+    notify_on_ssh_change: bool = True
     # Wall-clock epoch (time.time()) until which triggers are paused; 0 = not
     # paused. Stored on disk so the separate settings process can drive pause.
     paused_until_epoch: float = 0.0
@@ -51,6 +72,7 @@ class Config:
         }
     )
     databricks: DatabricksConfig = field(default_factory=DatabricksConfig)
+    cost: CostConfig = field(default_factory=CostConfig)
     # Which editors to watch/close (keys from editors.KEYS); default = all known editors.
     watched_editors: list[str] = field(default_factory=lambda: list(editors.KEYS))
 
@@ -117,6 +139,58 @@ def read_status() -> str:
         return "AFKiller"
 
 
+def stats_path() -> Path:
+    return Path(user_config_dir(APP_NAME)) / "stats.toml"
+
+
+def load_stats() -> Stats:
+    """Running totals, stored separately from config.toml so the watcher's frequent writes
+    don't trip the settings window's config mtime-reload, and a Reset can't clobber settings."""
+    path = stats_path()
+    try:
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return Stats(since=date.today().isoformat())
+
+    stats = Stats(since=date.today().isoformat())
+    section = data.get("cost", {})
+    if isinstance(section, dict):
+        saved = section.get("total_dbus_saved")
+        if isinstance(saved, (int, float)) and not isinstance(saved, bool) and saved >= 0:
+            stats.total_dbus_saved = float(saved)
+        count = section.get("stops_count")
+        if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+            stats.stops_count = count
+        since = section.get("since")
+        if isinstance(since, str) and since.strip():
+            stats.since = since.strip()
+    return stats
+
+
+def save_stats(stats: Stats) -> None:
+    path = stats_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = [
+            "[cost]",
+            f"total_dbus_saved = {stats.total_dbus_saved}",
+            f"stops_count = {stats.stops_count}",
+            f"since = {_toml_str(stats.since)}",
+            "",
+        ]
+        path.write_text("\n".join(lines), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def reset_stats() -> Stats:
+    """Zero the totals and restart the 'since' date. Returns the fresh Stats."""
+    fresh = Stats(since=date.today().isoformat())
+    save_stats(fresh)
+    return fresh
+
+
 def load() -> Config:
     path = config_path()
     if not path.exists():
@@ -137,6 +211,9 @@ def load() -> Config:
     ssh_gate = data.get("close_only_when_ssh_connected")
     if isinstance(ssh_gate, bool):
         cfg.close_only_when_ssh_connected = ssh_gate
+    ssh_notify = data.get("notify_on_ssh_change")
+    if isinstance(ssh_notify, bool):
+        cfg.notify_on_ssh_change = ssh_notify
     paused = data.get("paused_until_epoch")
     if isinstance(paused, (int, float)) and paused > 0:
         cfg.paused_until_epoch = float(paused)
@@ -181,6 +258,22 @@ def load() -> Config:
         if isinstance(cli, str):
             d.cli_path = cli.strip()
 
+    cost = data.get("cost")
+    if isinstance(cost, dict):
+        c = cfg.cost
+        if isinstance(cost.get("enabled"), bool):
+            c.enabled = cost["enabled"]
+        rate = cost.get("dbu_per_hour")
+        if isinstance(rate, (int, float)) and not isinstance(rate, bool) and rate >= 0:
+            c.dbu_per_hour = float(rate)
+        if isinstance(cost.get("show_in_tray"), bool):
+            c.show_in_tray = cost["show_in_tray"]
+        if isinstance(cost.get("idle_alert_enabled"), bool):
+            c.idle_alert_enabled = cost["idle_alert_enabled"]
+        mins = cost.get("idle_alert_minutes")
+        if isinstance(mins, int) and not isinstance(mins, bool) and mins > 0:
+            c.idle_alert_minutes = mins
+
     return cfg
 
 
@@ -193,6 +286,7 @@ def save(cfg: Config) -> None:
         f"warning_seconds = {cfg.warning_seconds}",
         f"close_only_when_ssh_connected = "
         f"{'true' if cfg.close_only_when_ssh_connected else 'false'}",
+        f"notify_on_ssh_change = {'true' if cfg.notify_on_ssh_change else 'false'}",
         f"paused_until_epoch = {cfg.paused_until_epoch}",
         "",
     ]
@@ -216,6 +310,15 @@ def save(cfg: Config) -> None:
     lines.append(f"require_system_idle = {'true' if d.require_system_idle else 'false'}")
     lines.append(f"notify = {'true' if d.notify else 'false'}")
     lines.append(f"cli_path = {_toml_str(d.cli_path)}")
+    lines.append("")
+
+    c = cfg.cost
+    lines.append("[cost]")
+    lines.append(f"enabled = {'true' if c.enabled else 'false'}")
+    lines.append(f"dbu_per_hour = {c.dbu_per_hour}")
+    lines.append(f"show_in_tray = {'true' if c.show_in_tray else 'false'}")
+    lines.append(f"idle_alert_enabled = {'true' if c.idle_alert_enabled else 'false'}")
+    lines.append(f"idle_alert_minutes = {c.idle_alert_minutes}")
     lines.append("")
 
     path.write_text("\n".join(lines), encoding="utf-8")

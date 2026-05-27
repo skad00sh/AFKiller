@@ -3,6 +3,8 @@
 - **Custom per-trigger minute input.** v1 ships preset values only (5/10/15/30/60 etc.); add a "Custom..." option that prompts for an arbitrary number of minutes.
 - **Windows auto-start installer.** Currently documented as a manual shortcut in `shell:startup`; ship a one-click installer that drops it for the user.
 - **More editors.** The registry in `src/afkiller/editors.py` makes adding editors trivial — extend it to VSCodium, Positron, Trae, etc. as users ask.
+- **DBU → dollar conversion.** Cost tracking reports DBUs; add a `$/DBU` rate so the live meter and "saved" total can also show dollars.
+- **Auto-detect DBU/hour from node types.** Bundle a `node_type → DBU/hour` lookup so the rate auto-fills from the cluster's shape (`clusters get`) instead of being entered by hand; fall back to the manual rate when a node type is unknown.
 
 ## Shipped
 
