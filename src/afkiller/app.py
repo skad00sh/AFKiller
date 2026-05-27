@@ -159,13 +159,20 @@ class App:
         if not target:
             self._notify("AFKiller", "No Databricks cluster detected to stop.")
             return
+        rt = databricks.cluster_runtime(target, db.profile)
         ok = databricks.terminate_cluster(target, db.profile)
+        saved = 0.0
+        if ok:
+            minutes_idle = (
+                (time.monotonic() - self.cursor_closed_at) / 60.0
+                if self.cursor_closed_at is not None
+                else 0.0
+            )
+            saved = self._credit_saved(rt.autotermination_minutes if rt else None, minutes_idle)
         if db.notify:
             self._notify(
                 "AFKiller",
-                f"Stopping Databricks cluster {target}"
-                if ok
-                else f"Failed to stop cluster {target}",
+                self._stop_message(target, saved) if ok else f"Failed to stop cluster {target}",
             )
 
     def _notify(self, title: str, message: str) -> None:
@@ -250,6 +257,30 @@ class App:
             return
         process.quit_graceful()
 
+    def _credit_saved(self, autotermination_minutes: Optional[int], minutes_idle: float) -> float:
+        """Estimate DBUs saved by stopping the cluster early and add to the persistent total.
+        Returns the credited amount (0 if cost is off or it can't be estimated). Every stop
+        (while cost tracking is on) bumps the stop count, even when the DBU credit is 0."""
+        if not self.cfg.cost.enabled:
+            return 0.0
+        rate = self.cfg.cost.dbu_per_hour
+        saved = 0.0
+        if rate > 0 and autotermination_minutes and autotermination_minutes > 0:
+            saved_minutes = max(0.0, autotermination_minutes - minutes_idle)
+            saved = saved_minutes / 60.0 * rate
+        stats = cfg_mod.load_stats()
+        stats.total_dbus_saved += saved
+        stats.stops_count += 1
+        cfg_mod.save_stats(stats)
+        return saved
+
+    @staticmethod
+    def _stop_message(target: str, saved: float) -> str:
+        msg = f"Stopping Databricks cluster {target}"
+        if saved > 0:
+            msg += f" · ≈{saved:.2f} DBU saved"
+        return msg
+
     def _maybe_stop_cluster(self, now: float) -> None:
         """Called each tick while Cursor is not running. Stops the Databricks cluster once
         it has been closed for the configured grace window, unless an SSH session is still
@@ -279,8 +310,9 @@ class App:
             self._set_countdown("Cluster in use (SSH active)")
             return
 
-        state = databricks.cluster_state(target, db.profile)
-        if state is not None and state != databricks.RUNNING:
+        rt = databricks.cluster_runtime(target, db.profile)
+        state = rt.state if rt else None
+        if state and state != databricks.RUNNING:
             # Already stopped/stopping/pending — nothing to do.
             self.cursor_closed_at = None
             self._set_countdown(f"Cluster {state.lower()}")
@@ -288,8 +320,10 @@ class App:
 
         self._set_countdown("Stopping cluster…")
         if databricks.terminate_cluster(target, db.profile):
+            minutes_idle = (now - self.cursor_closed_at) / 60.0 if self.cursor_closed_at else 0.0
+            saved = self._credit_saved(rt.autotermination_minutes if rt else None, minutes_idle)
             if db.notify:
-                self._notify("AFKiller", f"Stopping Databricks cluster {target}")
+                self._notify("AFKiller", self._stop_message(target, saved))
             self.cursor_closed_at = None  # done; don't re-fire
         else:
             # CLI missing/unauth/network error — retry after another full window, no spam.
