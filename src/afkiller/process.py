@@ -16,26 +16,36 @@ from afkiller.editors import Editor
 _IS_WIN = sys.platform == "win32"
 
 
-def _match(name_lower: str, editors: Iterable[Editor]) -> Editor | None:
-    """The editor whose main-process name equals ``name_lower`` (exact, not substring)."""
-    for ed in editors:
-        if name_lower == (ed.win_exe if _IS_WIN else ed.mac_process):
-            return ed
+def _match(proc: psutil.Process, editors: Iterable[Editor]) -> Editor | None:
+    """The editor this process is the *main* process of, or None.
+
+    macOS: match the app-bundle path ``/<mac_app>.app/Contents/MacOS/`` — robust even when
+    the executable is the generic ``Electron`` (e.g. Kiro), and it excludes helper children
+    (which live under ``/Contents/Frameworks/``). Windows: exact executable-name match."""
+    try:
+        if _IS_WIN:
+            name = (proc.info.get("name") or "").lower()
+            if not name:
+                return None
+            for ed in editors:
+                if name == ed.win_exe:
+                    return ed
+        else:
+            exe = proc.info.get("exe") or ""
+            for ed in editors:
+                if f"/{ed.mac_app}.app/Contents/MacOS/" in exe:
+                    return ed
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return None
     return None
 
 
 def _iter_running(editors: Iterable[Editor]) -> Iterator[tuple[psutil.Process, Editor]]:
     """Yield (process, editor) for each live main process of a watched editor. Helper
-    children (e.g. "Code Helper") don't match — only the exact main-process name does."""
+    children don't match — only the editor's main process does."""
     editors = tuple(editors)
-    for proc in psutil.process_iter(attrs=["pid", "name"]):
-        try:
-            name = (proc.info.get("name") or "").lower()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-        if not name:
-            continue
-        ed = _match(name, editors)
+    for proc in psutil.process_iter(attrs=["pid", "name", "exe"]):
+        ed = _match(proc, editors)
         if ed is not None:
             yield proc, ed
 

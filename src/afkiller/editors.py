@@ -5,9 +5,12 @@ whether an editor is running / frontmost and to quit it. ``process.py`` and ``fo
 contain the generic OS logic and consume this registry, so adding another editor is a
 one-line change here.
 
-To add an editor, append an ``Editor`` below. macOS values come from the app bundle's
-``Info.plist`` (``CFBundleExecutable`` = ``mac_process``, the ``.app`` name = ``mac_app``);
-``focus_aliases`` are the lowercased names the OS reports for the frontmost app."""
+macOS detection matches the **app-bundle path** (``/<mac_app>.app/Contents/MacOS/``) rather
+than the executable name — some editors ship a generic ``Electron`` executable (e.g. Kiro),
+so the bundle name is the reliable signal. Windows matches the executable name (Electron
+Windows builds are renamed to the product, e.g. ``Kiro.exe``). ``focus_aliases`` are the
+lowercased names the OS reports for the frontmost app (macOS ``localizedName`` /
+Windows process name)."""
 
 from __future__ import annotations
 
@@ -19,21 +22,19 @@ from dataclasses import dataclass
 class Editor:
     key: str  # stable identifier used in config (never rename — would orphan configs)
     display_name: str  # shown in settings, e.g. "VS Code"
-    mac_app: str  # macOS .app / AppleScript application name
-    mac_process: str  # macOS main-process name (CFBundleExecutable), lowercased for compare
+    mac_app: str  # macOS .app / AppleScript name; also the bundle matched on macOS
     win_exe: str  # Windows executable, lowercased
     focus_aliases: tuple[str, ...]  # lowercased names the foreground app may report
 
 
-# Identifiers verified on macOS where marked; Windsurf/Kiro use best-known values pending a
-# real-install check (see the plan's risks). VS Code's process name "code" is generic but an
-# exact (not substring) match is safe — Xcode reports "Xcode", helpers report "Code Helper".
+# macOS app names verified on this machine for VS Code / Cursor / Antigravity / Kiro;
+# Windows exe is best-known for the unverified ones. Note Kiro's macOS executable is the
+# generic "Electron" (CFBundleExecutable), which is exactly why we match the bundle path.
 EDITORS: tuple[Editor, ...] = (
     Editor(
         key="vscode",
         display_name="VS Code",
         mac_app="Visual Studio Code",
-        mac_process="code",
         win_exe="code.exe",
         focus_aliases=("code", "visual studio code"),
     ),
@@ -41,7 +42,6 @@ EDITORS: tuple[Editor, ...] = (
         key="cursor",
         display_name="Cursor",
         mac_app="Cursor",
-        mac_process="cursor",
         win_exe="cursor.exe",
         focus_aliases=("cursor",),
     ),
@@ -49,7 +49,6 @@ EDITORS: tuple[Editor, ...] = (
         key="windsurf",
         display_name="Windsurf",
         mac_app="Windsurf",
-        mac_process="windsurf",
         win_exe="windsurf.exe",
         focus_aliases=("windsurf",),
     ),
@@ -57,7 +56,6 @@ EDITORS: tuple[Editor, ...] = (
         key="antigravity",
         display_name="Antigravity",
         mac_app="Antigravity",
-        mac_process="antigravity",
         win_exe="antigravity.exe",
         focus_aliases=("antigravity",),
     ),
@@ -65,7 +63,6 @@ EDITORS: tuple[Editor, ...] = (
         key="kiro",
         display_name="Kiro",
         mac_app="Kiro",
-        mac_process="kiro",
         win_exe="kiro.exe",
         focus_aliases=("kiro",),
     ),
