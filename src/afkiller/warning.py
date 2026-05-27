@@ -10,7 +10,7 @@ import tkinter as tk
 
 def run_standalone(seconds: int) -> bool:
     """Show the countdown on this process's main thread and block until it ends.
-    Returns True if the user cancelled (keep Cursor open), False if it ran out."""
+    Returns True if the user cancelled (keep the editor open), False if it ran out."""
     root = tk.Tk()
     root.title("AFKiller")
     root.attributes("-topmost", True)
@@ -31,7 +31,7 @@ def run_standalone(seconds: int) -> bool:
 
     tk.Label(
         root,
-        text="Closing Cursor due to inactivity",
+        text="Closing your editor due to inactivity",
         font=("Helvetica", 13, "bold"),
     ).pack(pady=(16, 4))
 
@@ -40,7 +40,7 @@ def run_standalone(seconds: int) -> bool:
 
     tk.Label(
         root,
-        text="Press Cancel to keep Cursor open.",
+        text="Press Cancel to keep it open.",
         font=("Helvetica", 10),
     ).pack(pady=(4, 8))
 
