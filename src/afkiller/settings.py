@@ -60,16 +60,35 @@ def run_standalone() -> None:
 
     root = tk.Tk()
     root.title("AFKiller — Settings")
-    root.resizable(False, False)
+    root.resizable(False, True)  # fixed width; height adjustable (content scrolls if taller)
     try:
         root.attributes("-topmost", True)
         root.lift()
     except tk.TclError:
         pass
 
-    frm = ttk.Frame(root, padding=16)
-    frm.grid(row=0, column=0, sticky="nsew")
+    # Scrollable container: the settings have grown past a single screen, so host the content
+    # frame inside a Canvas + vertical scrollbar. `frm` stays the inner frame, so every widget
+    # below is added exactly as before.
+    root.rowconfigure(0, weight=1)
+    root.columnconfigure(0, weight=1)
+    canvas = tk.Canvas(root, highlightthickness=0)
+    vsb = ttk.Scrollbar(root, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=vsb.set)
+    canvas.grid(row=0, column=0, sticky="nsew")
+    vsb.grid(row=0, column=1, sticky="ns")
+
+    frm = ttk.Frame(canvas, padding=16)
     frm.columnconfigure(1, weight=1)
+    _frm_id = canvas.create_window((0, 0), window=frm, anchor="nw")
+    # Keep the scrollregion in sync with the content, and the inner frame as wide as the canvas.
+    frm.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+    canvas.bind("<Configure>", lambda e: canvas.itemconfigure(_frm_id, width=e.width))
+
+    def _on_wheel(event: tk.Event) -> None:
+        canvas.yview_scroll(-1 * int(event.delta), "units")  # macOS delta is small +/- ints
+
+    canvas.bind_all("<MouseWheel>", _on_wheel)
 
     # ----- live status line (published by the tray process) -----
     status_var = tk.StringVar(value=cfg_mod.read_status())
@@ -550,11 +569,17 @@ def run_standalone() -> None:
     )
     ttk.Button(btns, text="Close", command=root.destroy).grid(row=0, column=1, sticky="e")
 
-    # Center once natural size is known.
+    # Size the canvas to the content, but cap its height to the screen so the bottom controls
+    # are always reachable (the scrollbar handles any overflow). Then center the window.
     root.update_idletasks()
-    w, h = root.winfo_width(), root.winfo_height()
+    content_w = frm.winfo_reqwidth()
+    content_h = frm.winfo_reqheight()
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-    root.geometry(f"+{(sw - w) // 2}+{(sh - h) // 3}")
+    view_h = min(content_h, sh - 160)  # leave room for the menu bar / Dock
+    canvas.configure(width=content_w, height=view_h)
+    root.update_idletasks()
+    w, h = root.winfo_reqwidth(), root.winfo_reqheight()
+    root.geometry(f"+{(sw - w) // 2}+{max((sh - h) // 3, 20)}")
 
     def _refresh() -> None:
         try:
