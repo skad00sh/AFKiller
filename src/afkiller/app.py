@@ -19,6 +19,15 @@ from afkiller.tray import build_menu, make_icon_image
 TICK_SECONDS = 1.0
 # Re-scan for the live Databricks SSH proxy process every N ticks (not every tick).
 DB_DETECT_INTERVAL_TICKS = 5
+# Re-poll the cluster's runtime (a ~1-2s `clusters get`) for the DBU meter every N ticks.
+COST_POLL_INTERVAL_TICKS = 30
+
+
+def _fmt_uptime(seconds: float) -> str:
+    """Compact duration like '2h13m' or '7m'."""
+    minutes = int(seconds // 60)
+    h, m = divmod(minutes, 60)
+    return f"{h}h{m:02d}m" if h else f"{m}m"
 
 
 @dataclass
@@ -47,6 +56,25 @@ class App:
         # Whether a remote SSH session is currently attached (None = unknown / not running).
         # Refreshed on the same throttled cadence as cluster detection.
         self._ssh_active: Optional[bool] = None
+        # Last SSH-connected state we notified about (None = no baseline yet, so the first
+        # reading is adopted silently and only later changes pop a notification).
+        self._ssh_notified: Optional[bool] = None
+
+        # DBU cost meter: a cached cluster-runtime snapshot, refreshed off-thread on a slow
+        # cadence (clusters-get is a network call). Uptime is extrapolated between polls from
+        # the monotonic timestamp so the meter climbs smoothly.
+        self._cluster_runtime: Optional[databricks.ClusterRuntime] = None
+        self._cluster_runtime_at = 0.0  # monotonic time the snapshot was taken
+        # Seed at the interval so the first eligible tick polls immediately; thereafter it
+        # polls every COST_POLL_INTERVAL_TICKS regardless of success, so a failing CLI call
+        # retries on the slow cadence instead of every tick.
+        self._cost_poll_counter = COST_POLL_INTERVAL_TICKS
+        self._cost_poll_inflight = False
+
+        # Idle-but-running alert: clock since the cluster went RUNNING-with-no-SSH, and a
+        # once-per-idle-spell fired flag.
+        self._cluster_idle_since: Optional[float] = None
+        self._idle_alert_fired = False
 
         # Last computed remaining-seconds across enabled triggers.
         self._countdown_text = "Starting..."
@@ -57,6 +85,8 @@ class App:
             title="AFKiller",
             menu=build_menu(
                 countdown_text=lambda: self._countdown_text,
+                cost_text=self.cost_text,
+                cost_enabled=self.cost_enabled,
                 open_settings=self._open_settings,
                 toggle_pause=self._toggle_pause,
                 is_paused=self._is_paused,
@@ -137,13 +167,20 @@ class App:
         if not target:
             self._notify("AFKiller", "No Databricks cluster detected to stop.")
             return
+        rt = databricks.cluster_runtime(target, db.profile)
         ok = databricks.terminate_cluster(target, db.profile)
+        saved = 0.0
+        if ok:
+            minutes_idle = (
+                (time.monotonic() - self.cursor_closed_at) / 60.0
+                if self.cursor_closed_at is not None
+                else 0.0
+            )
+            saved = self._credit_saved(rt.autotermination_minutes if rt else None, minutes_idle)
         if db.notify:
             self._notify(
                 "AFKiller",
-                f"Stopping Databricks cluster {target}"
-                if ok
-                else f"Failed to stop cluster {target}",
+                self._stop_message(target, saved) if ok else f"Failed to stop cluster {target}",
             )
 
     def _notify(self, title: str, message: str) -> None:
@@ -228,6 +265,30 @@ class App:
             return
         process.quit_graceful()
 
+    def _credit_saved(self, autotermination_minutes: Optional[int], minutes_idle: float) -> float:
+        """Estimate DBUs saved by stopping the cluster early and add to the persistent total.
+        Returns the credited amount (0 if cost is off or it can't be estimated). Every stop
+        (while cost tracking is on) bumps the stop count, even when the DBU credit is 0."""
+        if not self.cfg.cost.enabled:
+            return 0.0
+        rate = self.cfg.cost.dbu_per_hour
+        saved = 0.0
+        if rate > 0 and autotermination_minutes and autotermination_minutes > 0:
+            saved_minutes = max(0.0, autotermination_minutes - minutes_idle)
+            saved = saved_minutes / 60.0 * rate
+        stats = cfg_mod.load_stats()
+        stats.total_dbus_saved += saved
+        stats.stops_count += 1
+        cfg_mod.save_stats(stats)
+        return saved
+
+    @staticmethod
+    def _stop_message(target: str, saved: float) -> str:
+        msg = f"Stopping Databricks cluster {target}"
+        if saved > 0:
+            msg += f" · ≈{saved:.2f} DBU saved"
+        return msg
+
     def _maybe_stop_cluster(self, now: float) -> None:
         """Called each tick while Cursor is not running. Stops the Databricks cluster once
         it has been closed for the configured grace window, unless an SSH session is still
@@ -257,8 +318,9 @@ class App:
             self._set_countdown("Cluster in use (SSH active)")
             return
 
-        state = databricks.cluster_state(target, db.profile)
-        if state is not None and state != databricks.RUNNING:
+        rt = databricks.cluster_runtime(target, db.profile)
+        state = rt.state if rt else None
+        if state and state != databricks.RUNNING:
             # Already stopped/stopping/pending — nothing to do.
             self.cursor_closed_at = None
             self._set_countdown(f"Cluster {state.lower()}")
@@ -266,12 +328,110 @@ class App:
 
         self._set_countdown("Stopping cluster…")
         if databricks.terminate_cluster(target, db.profile):
+            minutes_idle = (now - self.cursor_closed_at) / 60.0 if self.cursor_closed_at else 0.0
+            saved = self._credit_saved(rt.autotermination_minutes if rt else None, minutes_idle)
             if db.notify:
-                self._notify("AFKiller", f"Stopping Databricks cluster {target}")
+                self._notify("AFKiller", self._stop_message(target, saved))
             self.cursor_closed_at = None  # done; don't re-fire
         else:
             # CLI missing/unauth/network error — retry after another full window, no spam.
             self.cursor_closed_at = now
+
+    # ----- DBU cost meter -----
+
+    def _maybe_poll_runtime(self) -> None:
+        """Refresh the cached cluster runtime off-thread, on a slow cadence, when cost
+        tracking is on and we know which cluster to look at. One poll in flight at a time."""
+        cost = self.cfg.cost
+        target = self.cfg.databricks.cluster_id or self.last_connected_cluster_id
+        if not cost.enabled or not target or self._cost_poll_inflight:
+            return
+        self._cost_poll_counter += 1
+        if self._cost_poll_counter >= COST_POLL_INTERVAL_TICKS:
+            self._cost_poll_counter = 0
+            self._cost_poll_inflight = True
+            threading.Thread(target=self._do_poll_runtime, args=(target,), daemon=True).start()
+
+    def _do_poll_runtime(self, target: str) -> None:
+        try:
+            db = self.cfg.databricks
+            rt = databricks.cluster_runtime(
+                target, db.profile, cli=databricks.resolve_cli(db.cli_path)
+            )
+            with self.lock:
+                self._cluster_runtime = rt
+                self._cluster_runtime_at = time.monotonic()
+        finally:
+            self._cost_poll_inflight = False
+
+    def _maybe_ssh_change_notify(self) -> None:
+        """Pop a notification when the SSH session connects or disconnects. Tracks the last
+        notified state so it fires only on a real edge; the first reading sets the baseline
+        silently (so an already-open session at startup doesn't trigger a stray popup)."""
+        connected = self._ssh_active is True
+        if not self.cfg.notify_on_ssh_change:
+            self._ssh_notified = connected  # keep baseline current so re-enabling is quiet
+            return
+        if self._ssh_notified is None:
+            self._ssh_notified = connected  # establish baseline, no notification
+            return
+        if connected == self._ssh_notified:
+            return
+        self._ssh_notified = connected
+        if connected:
+            target = self.cfg.databricks.cluster_id or self.last_connected_cluster_id or "cluster"
+            self._notify("AFKiller", f"SSH connected to {target} — AFKiller is watching.")
+        else:
+            self._notify("AFKiller", "SSH session closed.")
+
+    def _maybe_idle_alert(self, now: float) -> None:
+        """Fire one notification when the cluster has been RUNNING with no SSH session for the
+        configured window. Independent of auto-stop — useful when auto-stop is off, or to
+        catch a cluster started outside Cursor. Resets when SSH returns or the cluster stops."""
+        cost = self.cfg.cost
+        if not cost.enabled or not cost.idle_alert_enabled:
+            self._cluster_idle_since = None
+            self._idle_alert_fired = False
+            return
+        rt = self._cluster_runtime
+        idle = rt is not None and rt.state == databricks.RUNNING and not self._ssh_active
+        if not idle:
+            self._cluster_idle_since = None
+            self._idle_alert_fired = False
+            return
+        if self._cluster_idle_since is None:
+            self._cluster_idle_since = now
+            return
+        if self._idle_alert_fired:
+            return
+        if now - self._cluster_idle_since >= cost.idle_alert_minutes * 60:
+            self._idle_alert_fired = True
+            target = self.cfg.databricks.cluster_id or self.last_connected_cluster_id or "cluster"
+            rate_txt = f" (~{cost.dbu_per_hour:g} DBU/hr)" if cost.dbu_per_hour > 0 else ""
+            self._notify(
+                "AFKiller",
+                f"Cluster {target} has been idle {cost.idle_alert_minutes} min "
+                f"and is still running{rate_txt}.",
+            )
+
+    def cost_enabled(self) -> bool:
+        """Whether to show the cost line in the tray menu."""
+        return self.cfg.cost.enabled and self.cfg.cost.show_in_tray
+
+    def cost_text(self) -> str:
+        """Tray line for the DBU meter, read from the cached runtime snapshot."""
+        c = self.cfg.cost
+        rt = self._cluster_runtime
+        if rt is None:
+            return "Cluster cost: unknown"
+        if rt.state != databricks.RUNNING or rt.uptime_seconds is None:
+            return "Cluster not running"
+        uptime = rt.uptime_seconds + max(0.0, time.monotonic() - self._cluster_runtime_at)
+        dur = _fmt_uptime(uptime)
+        if c.dbu_per_hour <= 0:
+            return f"Running {dur} · set DBU/hr in Settings"
+        dbus = uptime / 3600.0 * c.dbu_per_hour
+        return f"≈ {dbus:.2f} DBU · {dur}"
 
     def _watcher(self) -> None:
         while not self.stop_event.is_set():
@@ -312,15 +472,35 @@ class App:
         # when the proxy process is usually gone) and gating whether we may close Cursor at all
         # — closing it with no session attached frees no cluster, so it's pointless.
         db = self.cfg.databricks
-        if running and (self.cfg.close_only_when_ssh_connected or db.enabled):
+        cost = self.cfg.cost
+        want_detect = (
+            self.cfg.close_only_when_ssh_connected
+            or self.cfg.notify_on_ssh_change
+            or db.enabled
+            or cost.enabled
+        )
+        # While Cursor runs we need the SSH signal for the close gate; the idle alert also
+        # needs it after Cursor closes (a cluster can sit idle with no tunnel), so keep
+        # scanning when that's on.
+        if want_detect and (running or cost.idle_alert_enabled):
             self._db_detect_counter += 1
             if self._ssh_active is None or self._db_detect_counter >= DB_DETECT_INTERVAL_TICKS:
                 self._db_detect_counter = 0
                 ids, self._ssh_active = databricks.scan_sessions()
-                if db.enabled and not db.cluster_id and ids:
+                if (db.enabled or cost.enabled) and not db.cluster_id and ids:
                     self.last_connected_cluster_id = ids[0]
         elif not running:
             self._ssh_active = None
+
+        # Notify on SSH connect/disconnect (rising/falling edge of the signal above; closing
+        # Cursor flips it to None == disconnected, which counts as a falling edge).
+        self._maybe_ssh_change_notify()
+
+        # DBU meter: keep the cached cluster runtime fresh (off-thread, slow cadence) so the
+        # tray can show consumption. Runs whether Cursor is open or closed (the cluster bills
+        # either way) as long as we know which cluster to look at.
+        self._maybe_poll_runtime()
+        self._maybe_idle_alert(now)
 
         # Paused: show paused text and skip trigger evaluation.
         if self._is_paused():

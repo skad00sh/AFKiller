@@ -60,16 +60,40 @@ def run_standalone() -> None:
 
     root = tk.Tk()
     root.title("AFKiller — Settings")
-    root.resizable(False, False)
+    root.resizable(False, True)  # fixed width; height adjustable (content scrolls if taller)
     try:
         root.attributes("-topmost", True)
         root.lift()
     except tk.TclError:
         pass
 
-    frm = ttk.Frame(root, padding=16)
-    frm.grid(row=0, column=0, sticky="nsew")
+    # Scrollable container: the settings have grown past a single screen, so host the content
+    # frame inside a Canvas + vertical scrollbar. `frm` stays the inner frame, so every widget
+    # below is added exactly as before.
+    root.rowconfigure(0, weight=1)
+    root.columnconfigure(0, weight=1)
+    canvas = tk.Canvas(root, highlightthickness=0, yscrollincrement=20)
+    vsb = ttk.Scrollbar(root, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=vsb.set)
+    canvas.grid(row=0, column=0, sticky="nsew")
+    vsb.grid(row=0, column=1, sticky="ns")
+
+    frm = ttk.Frame(canvas, padding=16)
     frm.columnconfigure(1, weight=1)
+    _frm_id = canvas.create_window((0, 0), window=frm, anchor="nw")
+    # Keep the scrollregion in sync with the content, and the inner frame as wide as the canvas.
+    frm.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+    canvas.bind("<Configure>", lambda e: canvas.itemconfigure(_frm_id, width=e.width))
+
+    def _on_wheel(event: tk.Event) -> None:
+        # macOS trackpad deltas can be small/fractional — int() would truncate to 0 and never
+        # scroll. Step a fixed amount per event by direction instead of scaling by magnitude.
+        if event.delta > 0:
+            canvas.yview_scroll(-1, "units")
+        elif event.delta < 0:
+            canvas.yview_scroll(1, "units")
+
+    canvas.bind_all("<MouseWheel>", _on_wheel)
 
     # ----- live status line (published by the tray process) -----
     status_var = tk.StringVar(value=cfg_mod.read_status())
@@ -132,6 +156,18 @@ def run_standalone() -> None:
         frm, text="Only close Cursor when connected over SSH",
         variable=ssh_gate_var, command=_on_ssh_gate,
     ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(6, 0))
+    row += 1
+
+    ssh_notify_var = tk.BooleanVar(value=cfg.notify_on_ssh_change)
+
+    def _on_ssh_notify() -> None:
+        cfg.notify_on_ssh_change = ssh_notify_var.get()
+        cfg_mod.save(cfg)
+
+    ttk.Checkbutton(
+        frm, text="Notify on SSH connect / disconnect",
+        variable=ssh_notify_var, command=_on_ssh_notify,
+    ).grid(row=row, column=0, columnspan=2, sticky="w")
     row += 1
 
     ttk.Separator(frm, orient="horizontal").grid(
@@ -425,6 +461,110 @@ def run_standalone() -> None:
     )
     row += 1
 
+    # ----- Cost tracking (DBUs) -----
+    ttk.Separator(frm, orient="horizontal").grid(
+        row=row, column=0, columnspan=2, sticky="ew", pady=(10, 10)
+    )
+    row += 1
+    ttk.Label(frm, text="Cost tracking (DBUs)", font=("Helvetica", 11, "bold")).grid(
+        row=row, column=0, columnspan=2, sticky="w", pady=(0, 4)
+    )
+    row += 1
+
+    cost = cfg.cost
+
+    cost_enabled_var = tk.BooleanVar(value=cost.enabled)
+
+    def _on_cost_enabled() -> None:
+        cost.enabled = cost_enabled_var.get()
+        cfg_mod.save(cfg)
+
+    ttk.Checkbutton(
+        frm, text="Track DBU consumption", variable=cost_enabled_var, command=_on_cost_enabled
+    ).grid(row=row, column=0, columnspan=2, sticky="w")
+    row += 1
+
+    ttk.Label(frm, text="DBU per hour").grid(row=row, column=0, sticky="w", pady=2)
+    rate_var = tk.StringVar(value=f"{cost.dbu_per_hour:g}")
+
+    def _on_rate(_e: object = None) -> None:
+        raw = rate_var.get().strip()
+        try:
+            val = max(0.0, float(raw)) if raw else 0.0
+        except ValueError:
+            rate_var.set(f"{cost.dbu_per_hour:g}")  # revert invalid input
+            return
+        cost.dbu_per_hour = val
+        rate_var.set(f"{val:g}")
+        cfg_mod.save(cfg)
+
+    rate_entry = ttk.Entry(frm, textvariable=rate_var, width=12, justify="right")
+    rate_entry.bind("<FocusOut>", _on_rate)
+    rate_entry.bind("<Return>", _on_rate)
+    rate_entry.grid(row=row, column=1, sticky="e", padx=(12, 0), pady=2)
+    row += 1
+
+    def _saved_label(s: cfg_mod.Stats) -> str:
+        return (
+            f"DBUs saved: ≈ {s.total_dbus_saved:.2f}  ·  {s.stops_count} stops"
+            f"  ·  since {s.since}"
+        )
+
+    saved_var = tk.StringVar(value=_saved_label(cfg_mod.load_stats()))
+
+    def _on_reset_stats() -> None:
+        saved_var.set(_saved_label(cfg_mod.reset_stats()))
+
+    ttk.Label(frm, textvariable=saved_var, foreground="#555555").grid(
+        row=row, column=0, sticky="w", pady=2
+    )
+    ttk.Button(frm, text="Reset", width=8, command=_on_reset_stats).grid(
+        row=row, column=1, sticky="e", padx=(12, 0), pady=2
+    )
+    row += 1
+
+    cost_tray_var = tk.BooleanVar(value=cost.show_in_tray)
+
+    def _on_cost_tray() -> None:
+        cost.show_in_tray = cost_tray_var.get()
+        cfg_mod.save(cfg)
+
+    ttk.Checkbutton(
+        frm, text="Show in menu bar", variable=cost_tray_var, command=_on_cost_tray
+    ).grid(row=row, column=0, columnspan=2, sticky="w")
+    row += 1
+
+    idle_alert_var = tk.BooleanVar(value=cost.idle_alert_enabled)
+
+    def _on_idle_alert() -> None:
+        cost.idle_alert_enabled = idle_alert_var.get()
+        cfg_mod.save(cfg)
+
+    ttk.Checkbutton(
+        frm, text="Alert when the cluster is idle but still running",
+        variable=idle_alert_var, command=_on_idle_alert,
+    ).grid(row=row, column=0, sticky="w")
+
+    idle_presets = (5, 10, 15, 30, 60)
+    idle_label_to_min = {human_minutes(p): p for p in idle_presets}
+    if cost.idle_alert_minutes not in idle_presets:
+        idle_label_to_min[human_minutes(cost.idle_alert_minutes)] = cost.idle_alert_minutes
+    idle_min_var = tk.StringVar(value=human_minutes(cost.idle_alert_minutes))
+    idle_combo = ttk.Combobox(
+        frm, textvariable=idle_min_var, values=list(idle_label_to_min.keys()),
+        state="readonly", width=9,
+    )
+
+    def _on_idle_min(_e: object = None) -> None:
+        m = idle_label_to_min.get(idle_min_var.get())
+        if m is not None:
+            cost.idle_alert_minutes = m
+            cfg_mod.save(cfg)
+
+    idle_combo.bind("<<ComboboxSelected>>", _on_idle_min)
+    idle_combo.grid(row=row, column=1, sticky="e", padx=(12, 0), pady=2)
+    row += 1
+
     # ----- action buttons -----
     btns = ttk.Frame(frm)
     btns.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(14, 0))
@@ -434,15 +574,22 @@ def run_standalone() -> None:
     )
     ttk.Button(btns, text="Close", command=root.destroy).grid(row=0, column=1, sticky="e")
 
-    # Center once natural size is known.
+    # Size the canvas to the content, but cap its height to the screen so the bottom controls
+    # are always reachable (the scrollbar handles any overflow). Then center the window.
     root.update_idletasks()
-    w, h = root.winfo_width(), root.winfo_height()
+    content_w = frm.winfo_reqwidth()
+    content_h = frm.winfo_reqheight()
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-    root.geometry(f"+{(sw - w) // 2}+{(sh - h) // 3}")
+    view_h = min(content_h, sh - 160)  # leave room for the menu bar / Dock
+    canvas.configure(width=content_w, height=view_h)
+    root.update_idletasks()
+    w, h = root.winfo_reqwidth(), root.winfo_reqheight()
+    root.geometry(f"+{(sw - w) // 2}+{max((sh - h) // 3, 20)}")
 
     def _refresh() -> None:
         try:
             status_var.set(cfg_mod.read_status())
+            saved_var.set(_saved_label(cfg_mod.load_stats()))  # reflect live stats writes
             p = _is_paused()
             if pause_var.get() != p:
                 pause_var.set(p)  # .set() does not fire the command callback
