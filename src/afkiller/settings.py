@@ -425,6 +425,110 @@ def run_standalone() -> None:
     )
     row += 1
 
+    # ----- Cost tracking (DBUs) -----
+    ttk.Separator(frm, orient="horizontal").grid(
+        row=row, column=0, columnspan=2, sticky="ew", pady=(10, 10)
+    )
+    row += 1
+    ttk.Label(frm, text="Cost tracking (DBUs)", font=("Helvetica", 11, "bold")).grid(
+        row=row, column=0, columnspan=2, sticky="w", pady=(0, 4)
+    )
+    row += 1
+
+    cost = cfg.cost
+
+    cost_enabled_var = tk.BooleanVar(value=cost.enabled)
+
+    def _on_cost_enabled() -> None:
+        cost.enabled = cost_enabled_var.get()
+        cfg_mod.save(cfg)
+
+    ttk.Checkbutton(
+        frm, text="Track DBU consumption", variable=cost_enabled_var, command=_on_cost_enabled
+    ).grid(row=row, column=0, columnspan=2, sticky="w")
+    row += 1
+
+    ttk.Label(frm, text="DBU per hour").grid(row=row, column=0, sticky="w", pady=2)
+    rate_var = tk.StringVar(value=f"{cost.dbu_per_hour:g}")
+
+    def _on_rate(_e: object = None) -> None:
+        raw = rate_var.get().strip()
+        try:
+            val = max(0.0, float(raw)) if raw else 0.0
+        except ValueError:
+            rate_var.set(f"{cost.dbu_per_hour:g}")  # revert invalid input
+            return
+        cost.dbu_per_hour = val
+        rate_var.set(f"{val:g}")
+        cfg_mod.save(cfg)
+
+    rate_entry = ttk.Entry(frm, textvariable=rate_var, width=12, justify="right")
+    rate_entry.bind("<FocusOut>", _on_rate)
+    rate_entry.bind("<Return>", _on_rate)
+    rate_entry.grid(row=row, column=1, sticky="e", padx=(12, 0), pady=2)
+    row += 1
+
+    def _saved_label(s: cfg_mod.Stats) -> str:
+        return (
+            f"DBUs saved: ≈ {s.total_dbus_saved:.2f}  ·  {s.stops_count} stops"
+            f"  ·  since {s.since}"
+        )
+
+    saved_var = tk.StringVar(value=_saved_label(cfg_mod.load_stats()))
+
+    def _on_reset_stats() -> None:
+        saved_var.set(_saved_label(cfg_mod.reset_stats()))
+
+    ttk.Label(frm, textvariable=saved_var, foreground="#555555").grid(
+        row=row, column=0, sticky="w", pady=2
+    )
+    ttk.Button(frm, text="Reset", width=8, command=_on_reset_stats).grid(
+        row=row, column=1, sticky="e", padx=(12, 0), pady=2
+    )
+    row += 1
+
+    cost_tray_var = tk.BooleanVar(value=cost.show_in_tray)
+
+    def _on_cost_tray() -> None:
+        cost.show_in_tray = cost_tray_var.get()
+        cfg_mod.save(cfg)
+
+    ttk.Checkbutton(
+        frm, text="Show in menu bar", variable=cost_tray_var, command=_on_cost_tray
+    ).grid(row=row, column=0, columnspan=2, sticky="w")
+    row += 1
+
+    idle_alert_var = tk.BooleanVar(value=cost.idle_alert_enabled)
+
+    def _on_idle_alert() -> None:
+        cost.idle_alert_enabled = idle_alert_var.get()
+        cfg_mod.save(cfg)
+
+    ttk.Checkbutton(
+        frm, text="Alert when the cluster is idle but still running",
+        variable=idle_alert_var, command=_on_idle_alert,
+    ).grid(row=row, column=0, sticky="w")
+
+    idle_presets = (5, 10, 15, 30, 60)
+    idle_label_to_min = {human_minutes(p): p for p in idle_presets}
+    if cost.idle_alert_minutes not in idle_presets:
+        idle_label_to_min[human_minutes(cost.idle_alert_minutes)] = cost.idle_alert_minutes
+    idle_min_var = tk.StringVar(value=human_minutes(cost.idle_alert_minutes))
+    idle_combo = ttk.Combobox(
+        frm, textvariable=idle_min_var, values=list(idle_label_to_min.keys()),
+        state="readonly", width=9,
+    )
+
+    def _on_idle_min(_e: object = None) -> None:
+        m = idle_label_to_min.get(idle_min_var.get())
+        if m is not None:
+            cost.idle_alert_minutes = m
+            cfg_mod.save(cfg)
+
+    idle_combo.bind("<<ComboboxSelected>>", _on_idle_min)
+    idle_combo.grid(row=row, column=1, sticky="e", padx=(12, 0), pady=2)
+    row += 1
+
     # ----- action buttons -----
     btns = ttk.Frame(frm)
     btns.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(14, 0))
@@ -443,6 +547,7 @@ def run_standalone() -> None:
     def _refresh() -> None:
         try:
             status_var.set(cfg_mod.read_status())
+            saved_var.set(_saved_label(cfg_mod.load_stats()))  # reflect live stats writes
             p = _is_paused()
             if pause_var.get() != p:
                 pause_var.set(p)  # .set() does not fire the command callback
