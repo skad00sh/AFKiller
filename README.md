@@ -59,6 +59,30 @@ Config keys (under `[databricks]` in `config.toml`):
 
 The **Pause** action suppresses the cluster stop along with the Cursor-close triggers.
 
+## Cost tracking (DBUs, optional)
+
+Puts a number on what the cluster is costing — and what AFKiller saves you. Three parts, all under **Settings → Cost tracking (DBUs)**:
+
+- **Live meter** — while a cluster is detected, the tray shows its running consumption, e.g. `≈ 3.40 DBU · 2h13m` (uptime × your rate).
+- **DBUs saved** — each time AFKiller stops a cluster early, it credits the auto-termination window it preempted to a running lifetime total (with a **Reset** button).
+- **Idle alert** *(off by default)* — notifies you when a cluster is `RUNNING` with no SSH session attached for *N* minutes. Handy when auto-stop is off, or to catch a cluster you started outside Cursor.
+
+Costs are reported in **DBUs** (Databricks' cloud-agnostic billing unit), not dollars. Databricks doesn't expose a DBU-per-node rate through the cluster API, so you enter your cluster's **DBU/hour once** in settings and every figure is an **estimate** (marked `≈`). It reuses the same `databricks` CLI profile / cluster detection as the cluster-stop feature. (Dollar conversion via a `$/DBU` rate is on the roadmap.)
+
+> "DBUs saved" is estimated as `(autotermination_minutes − minutes already idle) × your DBU/hour`, clamped at zero. If the cluster has no auto-termination configured, the saved credit is 0 (we don't invent a number).
+
+Config keys (under `[cost]` in `config.toml`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Master switch for cost tracking. |
+| `dbu_per_hour` | `0.0` | Your cluster's DBU/hour; `0` = unknown (meter shows a hint instead of a number). |
+| `show_in_tray` | `true` | Show the live meter line in the menu. |
+| `idle_alert_enabled` | `false` | Notify when a cluster is idle but still running. |
+| `idle_alert_minutes` | `15` | Idle window before the alert fires. |
+
+Running totals live separately in `stats.toml` (next to `config.toml`), so resetting them never touches your settings.
+
 ## Setup
 
 Requires [`uv`](https://github.com/astral-sh/uv) and Python 3.12.
