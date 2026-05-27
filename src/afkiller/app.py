@@ -60,7 +60,7 @@ class App:
                 open_settings=self._open_settings,
                 toggle_pause=self._toggle_pause,
                 is_paused=self._is_paused,
-                quit_cursor_now=self._quit_cursor_now,
+                quit_editor_now=self._quit_editor_now,
                 stop_cluster_now=self._stop_cluster_now,
                 databricks_enabled=lambda: self.cfg.databricks.enabled,
                 quit_app=self._quit_app,
@@ -120,7 +120,7 @@ class App:
         """The editor definitions currently being watched (from config)."""
         return editors.enabled_editors(self.cfg.watched_editors)
 
-    def _quit_cursor_now(self) -> None:
+    def _quit_editor_now(self) -> None:
         if self.cfg.close_mode == "force_kill":
             process.kill_force(self._editors())
         else:
