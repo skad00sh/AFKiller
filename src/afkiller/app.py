@@ -68,6 +68,11 @@ class App:
         self._cost_poll_counter = COST_POLL_INTERVAL_TICKS
         self._cost_poll_inflight = False
 
+        # Idle-but-running alert: clock since the cluster went RUNNING-with-no-SSH, and a
+        # once-per-idle-spell fired flag.
+        self._cluster_idle_since: Optional[float] = None
+        self._idle_alert_fired = False
+
         # Last computed remaining-seconds across enabled triggers.
         self._countdown_text = "Starting..."
 
@@ -356,6 +361,36 @@ class App:
         finally:
             self._cost_poll_inflight = False
 
+    def _maybe_idle_alert(self, now: float) -> None:
+        """Fire one notification when the cluster has been RUNNING with no SSH session for the
+        configured window. Independent of auto-stop — useful when auto-stop is off, or to
+        catch a cluster started outside Cursor. Resets when SSH returns or the cluster stops."""
+        cost = self.cfg.cost
+        if not cost.enabled or not cost.idle_alert_enabled:
+            self._cluster_idle_since = None
+            self._idle_alert_fired = False
+            return
+        rt = self._cluster_runtime
+        idle = rt is not None and rt.state == databricks.RUNNING and not self._ssh_active
+        if not idle:
+            self._cluster_idle_since = None
+            self._idle_alert_fired = False
+            return
+        if self._cluster_idle_since is None:
+            self._cluster_idle_since = now
+            return
+        if self._idle_alert_fired:
+            return
+        if now - self._cluster_idle_since >= cost.idle_alert_minutes * 60:
+            self._idle_alert_fired = True
+            target = self.cfg.databricks.cluster_id or self.last_connected_cluster_id or "cluster"
+            rate_txt = f" (~{cost.dbu_per_hour:g} DBU/hr)" if cost.dbu_per_hour > 0 else ""
+            self._notify(
+                "AFKiller",
+                f"Cluster {target} has been idle {cost.idle_alert_minutes} min "
+                f"and is still running{rate_txt}.",
+            )
+
     def cost_enabled(self) -> bool:
         """Whether to show the cost line in the tray menu."""
         return self.cfg.cost.enabled and self.cfg.cost.show_in_tray
@@ -415,7 +450,11 @@ class App:
         # — closing it with no session attached frees no cluster, so it's pointless.
         db = self.cfg.databricks
         cost = self.cfg.cost
-        if running and (self.cfg.close_only_when_ssh_connected or db.enabled or cost.enabled):
+        want_detect = self.cfg.close_only_when_ssh_connected or db.enabled or cost.enabled
+        # While Cursor runs we need the SSH signal for the close gate; the idle alert also
+        # needs it after Cursor closes (a cluster can sit idle with no tunnel), so keep
+        # scanning when that's on.
+        if want_detect and (running or cost.idle_alert_enabled):
             self._db_detect_counter += 1
             if self._ssh_active is None or self._db_detect_counter >= DB_DETECT_INTERVAL_TICKS:
                 self._db_detect_counter = 0
@@ -429,6 +468,7 @@ class App:
         # tray can show consumption. Runs whether Cursor is open or closed (the cluster bills
         # either way) as long as we know which cluster to look at.
         self._maybe_poll_runtime()
+        self._maybe_idle_alert(now)
 
         # Paused: show paused text and skip trigger evaluation.
         if self._is_paused():
