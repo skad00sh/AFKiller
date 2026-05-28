@@ -40,6 +40,8 @@ jobs:
             --name AFKiller \
             --windowed \
             --osx-bundle-identifier com.skad00sh.afkiller \
+            --icon assets/icon.icns \
+            --add-data "assets/icon.png:assets" \
             --collect-all pystray \
             --collect-all PIL \
             src/afkiller/__main__.py
@@ -59,6 +61,8 @@ jobs:
             --name AFKiller \
             --windowed \
             --onefile \
+            --icon assets/icon.ico \
+            --add-data "assets/icon.png;assets" \
             --collect-all pystray \
             --collect-all PIL \
             src/afkiller/__main__.py
