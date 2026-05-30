@@ -186,7 +186,7 @@ def run_standalone() -> None:
     ed_frame = ttk.Frame(frm)
     ed_frame.grid(row=row, column=0, columnspan=2, sticky="w")
     row += 1
-    for i, ed in enumerate(editors.EDITORS):  # compact 3-column grid to save height
+    for i, ed in enumerate(editors.EDITORS):  # single row, one column per editor
         ed_var = tk.BooleanVar(value=ed.key in cfg.watched_editors)
 
         def _on_ed(k: str = ed.key, var: tk.BooleanVar = ed_var) -> None:
@@ -194,7 +194,7 @@ def run_standalone() -> None:
 
         ttk.Checkbutton(
             ed_frame, text=ed.display_name, variable=ed_var, command=_on_ed
-        ).grid(row=i // 3, column=i % 3, sticky="w", padx=(0, 12), pady=1)
+        ).grid(row=0, column=i, sticky="w", padx=(0, 12), pady=1)
 
     ttk.Separator(frm, orient="horizontal").grid(
         row=row, column=0, columnspan=2, sticky="ew", pady=(10, 10)
