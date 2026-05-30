@@ -6,20 +6,36 @@ click. The menu keeps only quick actions that are one-shot by nature."""
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Callable
 
 import pystray
 from PIL import Image, ImageDraw
 
 
+def _icon_path() -> Path:
+    """Locate assets/icon.png in dev (repo root) and frozen (PyInstaller) builds."""
+    base = getattr(sys, "_MEIPASS", None)  # PyInstaller bundle root, if frozen
+    if base:
+        return Path(base) / "assets" / "icon.png"
+    return Path(__file__).resolve().parents[2] / "assets" / "icon.png"
+
+
 def make_icon_image() -> Image.Image:
-    """Draw a simple red 'CA' badge for the tray."""
-    size = 64
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.ellipse((2, 2, size - 2, size - 2), fill=(192, 57, 43, 255))
-    d.text((14, 16), "CA", fill=(255, 255, 255, 255))
-    return img
+    """The app icon, for the menu bar / notification area. Falls back to a drawn 'CA'
+    badge if the asset can't be loaded, so the tray always has an image."""
+    try:
+        img = Image.open(_icon_path()).convert("RGBA")
+        img.thumbnail((128, 128), Image.LANCZOS)
+        return img
+    except (OSError, ValueError):
+        size = 64
+        img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.ellipse((2, 2, size - 2, size - 2), fill=(192, 57, 43, 255))
+        d.text((14, 16), "CA", fill=(255, 255, 255, 255))
+        return img
 
 
 def build_menu(

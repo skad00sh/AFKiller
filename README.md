@@ -109,7 +109,7 @@ uv sync
 uv run afkiller
 ```
 
-A red "CA" badge appears in the menu bar (macOS) or notification area (Windows). Right-click it for the menu.
+The app icon appears in the menu bar (macOS) or notification area (Windows). Right-click it for the menu.
 
 ## Tray menu
 
@@ -158,6 +158,10 @@ uv run pyinstaller --noconfirm --name AFKiller --windowed \
   src/afkiller/__main__.py
 # macOS only: plutil -insert LSUIElement -bool true "dist/AFKiller.app/Contents/Info.plist"
 ```
+
+## Credits
+
+App icon created using ChatGPT (OpenAI). See [assets/CREDITS.md](assets/CREDITS.md).
 
 ## License
 
