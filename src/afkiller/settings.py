@@ -13,6 +13,7 @@ from __future__ import annotations
 import threading
 import time
 import tkinter as tk
+from datetime import date, datetime, timedelta
 from tkinter import ttk
 
 from afkiller import config as cfg_mod
@@ -536,18 +537,70 @@ def run_standalone() -> None:
             f"  ·  since {s.since}"
         )
 
-    saved_var = tk.StringVar(value=_saved_label(cfg_mod.load_stats()))
+    def _rollup_label(events: list[cfg_mod.Event]) -> str:
+        # ISO-prefix comparisons work because timestamps are lexicographically ordered.
+        week_start = (date.today() - timedelta(days=7)).isoformat()
+        month_start = date.today().replace(day=1).isoformat()
+        week_total = sum(e.dbus_saved for e in events if e.timestamp >= week_start)
+        month_total = sum(e.dbus_saved for e in events if e.timestamp >= month_start)
+        return (
+            f"This week: ≈ {week_total:.2f} DBU  ·  This month: ≈ {month_total:.2f} DBU"
+        )
 
-    def _on_reset_stats() -> None:
-        saved_var.set(_saved_label(cfg_mod.reset_stats()))
+    def _event_row(evt: cfg_mod.Event) -> tuple[str, str, str, str]:
+        try:
+            when = datetime.fromisoformat(evt.timestamp).strftime("%b %d, %I:%M %p")
+        except ValueError:
+            when = evt.timestamp
+        cluster = evt.cluster_id[-8:] if evt.cluster_id else "—"
+        return (when, cluster, f"{evt.dbus_saved:.2f}", evt.reason)
+
+    _initial_stats = cfg_mod.load_stats()
+    saved_var = tk.StringVar(value=_saved_label(_initial_stats))
+    rollup_var = tk.StringVar(value=_rollup_label(_initial_stats.events))
 
     ttk.Label(frm, textvariable=saved_var, foreground="#555555").grid(
         row=row, column=0, sticky="w", pady=2
     )
-    ttk.Button(frm, text="Reset", width=8, command=_on_reset_stats).grid(
-        row=row, column=1, sticky="e", padx=(12, 0), pady=2
+    reset_btn = ttk.Button(frm, text="Reset", width=8)
+    reset_btn.grid(row=row, column=1, sticky="e", padx=(12, 0), pady=2)
+    row += 1
+
+    ttk.Label(frm, textvariable=rollup_var, foreground="#555555").grid(
+        row=row, column=0, columnspan=2, sticky="w", pady=(0, 2)
     )
     row += 1
+
+    # Recent stops — Treeview + scrollbar. 50 most-recent shown; up to EVENT_LOG_LIMIT live
+    # in stats.toml. Newest first.
+    log_frame = ttk.Frame(frm)
+    log_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(2, 6))
+    log_frame.columnconfigure(0, weight=1)
+    columns = ("when", "cluster", "saved", "reason")
+    tree = ttk.Treeview(log_frame, columns=columns, show="headings", height=6)
+    tree.heading("when", text="When")
+    tree.heading("cluster", text="Cluster")
+    tree.heading("saved", text="Saved (DBU)")
+    tree.heading("reason", text="Reason")
+    tree.column("when", width=140, anchor="w")
+    tree.column("cluster", width=90, anchor="w")
+    tree.column("saved", width=90, anchor="e")
+    tree.column("reason", width=70, anchor="w")
+    tree_scroll = ttk.Scrollbar(log_frame, orient="vertical", command=tree.yview)
+    tree.configure(yscrollcommand=tree_scroll.set)
+    tree.grid(row=0, column=0, sticky="nsew")
+    tree_scroll.grid(row=0, column=1, sticky="ns")
+    for evt in reversed(_initial_stats.events[-50:]):
+        tree.insert("", "end", values=_event_row(evt))
+    row += 1
+
+    def _on_reset_stats() -> None:
+        fresh = cfg_mod.reset_stats()
+        saved_var.set(_saved_label(fresh))
+        rollup_var.set(_rollup_label(fresh.events))
+        tree.delete(*tree.get_children())
+
+    reset_btn.configure(command=_on_reset_stats)
 
     cost_tray_var = tk.BooleanVar(value=cost.show_in_tray)
 
