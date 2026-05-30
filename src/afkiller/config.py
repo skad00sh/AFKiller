@@ -44,12 +44,35 @@ class CostConfig:
 
 
 @dataclass
+class Event:
+    """One cluster-stop entry in the persistent event log.
+
+    `timestamp` is a local-naive ISO string (``datetime.now().isoformat(timespec="seconds")``)
+    to match the rest of the codebase; we never compare across timezones.
+    `reason` is ``"auto"`` (auto-stop after the editor closed) or ``"manual"`` (the user
+    clicked Stop cluster now) — left as a free string so future reasons can be added without
+    a schema change."""
+
+    timestamp: str
+    cluster_id: str
+    dbus_saved: float
+    reason: str
+    autotermination_minutes: int = 0
+
+
+# Cap on the persistent event log. ~500 entries × ~80 chars/entry ≈ 40 KB on disk; FIFO drop
+# on save keeps stats.toml bounded without needing a separate prune path.
+EVENT_LOG_LIMIT = 500
+
+
+@dataclass
 class Stats:
     """Running totals, persisted separately from settings (see stats_path)."""
 
     total_dbus_saved: float = 0.0
     stops_count: int = 0
     since: str = ""  # ISO date counting started / was last reset
+    events: list[Event] = field(default_factory=list)
 
 
 @dataclass
@@ -165,6 +188,34 @@ def load_stats() -> Stats:
         since = section.get("since")
         if isinstance(since, str) and since.strip():
             stats.since = since.strip()
+
+    # [[events]] array-of-tables (parsed natively by tomllib). Invalid rows skipped so a
+    # corrupted entry doesn't lose the whole log.
+    raw_events = data.get("events")
+    if isinstance(raw_events, list):
+        for raw in raw_events:
+            if not isinstance(raw, dict):
+                continue
+            ts = raw.get("timestamp")
+            if not isinstance(ts, str) or not ts.strip():
+                continue
+            saved = raw.get("dbus_saved")
+            if not isinstance(saved, (int, float)) or isinstance(saved, bool) or saved < 0:
+                continue
+            reason = raw.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                continue
+            cid = raw.get("cluster_id")
+            cluster_id = cid.strip() if isinstance(cid, str) else ""
+            auto = raw.get("autotermination_minutes")
+            auto_min = auto if isinstance(auto, int) and not isinstance(auto, bool) and auto >= 0 else 0
+            stats.events.append(Event(
+                timestamp=ts.strip(),
+                cluster_id=cluster_id,
+                dbus_saved=float(saved),
+                reason=reason.strip(),
+                autotermination_minutes=auto_min,
+            ))
     return stats
 
 
@@ -179,6 +230,15 @@ def save_stats(stats: Stats) -> None:
             f"since = {_toml_str(stats.since)}",
             "",
         ]
+        # FIFO-drop oldest events past the cap so stats.toml stays bounded.
+        for evt in stats.events[-EVENT_LOG_LIMIT:]:
+            lines.append("[[events]]")
+            lines.append(f"timestamp = {_toml_str(evt.timestamp)}")
+            lines.append(f"cluster_id = {_toml_str(evt.cluster_id)}")
+            lines.append(f"dbus_saved = {evt.dbus_saved}")
+            lines.append(f"reason = {_toml_str(evt.reason)}")
+            lines.append(f"autotermination_minutes = {evt.autotermination_minutes}")
+            lines.append("")
         path.write_text("\n".join(lines), encoding="utf-8")
     except OSError:
         pass
