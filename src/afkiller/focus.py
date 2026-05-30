@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterable
+
+from afkiller.editors import Editor
 
 
 if sys.platform == "win32":
@@ -39,9 +42,18 @@ else:
         return None
 
 
-def is_cursor_foreground() -> bool:
+def foreground_editor(editors: Iterable[Editor]) -> Editor | None:
+    """The watched editor that is currently frontmost, or None.
+
+    On macOS the foreground name is the app's ``localizedName`` (e.g. ``Code``); on Windows
+    it's the executable (e.g. ``Code.exe``). Match against each editor's ``focus_aliases``
+    and its Windows exe / stem so both platforms resolve."""
     name = foreground_app_name()
     if not name:
-        return False
-    lowered = name.lower()
-    return "cursor" in lowered
+        return None
+    low = name.lower()
+    stem = low[:-4] if low.endswith(".exe") else low
+    for ed in editors:
+        if low in ed.focus_aliases or low == ed.win_exe or stem in ed.focus_aliases:
+            return ed
+    return None

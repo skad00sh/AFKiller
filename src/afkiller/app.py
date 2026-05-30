@@ -12,7 +12,7 @@ from typing import Optional
 import pystray
 
 from afkiller import config as cfg_mod
-from afkiller import databricks, focus, idle, process, settings, warning
+from afkiller import databricks, editors, focus, idle, process, settings, warning
 from afkiller.config import PAUSE_DURATION_SEC
 from afkiller.tray import build_menu, make_icon_image
 
@@ -90,7 +90,7 @@ class App:
                 open_settings=self._open_settings,
                 toggle_pause=self._toggle_pause,
                 is_paused=self._is_paused,
-                quit_cursor_now=self._quit_cursor_now,
+                quit_editor_now=self._quit_editor_now,
                 stop_cluster_now=self._stop_cluster_now,
                 databricks_enabled=lambda: self.cfg.databricks.enabled,
                 quit_app=self._quit_app,
@@ -146,11 +146,15 @@ class App:
         except OSError as e:
             print(f"[afkiller] failed to open settings: {e}", file=sys.stderr)
 
-    def _quit_cursor_now(self) -> None:
+    def _editors(self) -> tuple[editors.Editor, ...]:
+        """The editor definitions currently being watched (from config)."""
+        return editors.enabled_editors(self.cfg.watched_editors)
+
+    def _quit_editor_now(self) -> None:
         if self.cfg.close_mode == "force_kill":
-            process.kill_force()
+            process.kill_force(self._editors())
         else:
-            process.quit_graceful()
+            process.quit_graceful(self._editors())
 
     def _stop_cluster_now(self) -> None:
         """Manual 'Stop cluster now'. Runs in a thread so the blocking CLI call doesn't
@@ -216,9 +220,9 @@ class App:
 
     def _remaining_for_enabled_triggers(self, now: float) -> dict[str, float]:
         """Returns {trigger_key: seconds_until_trip}. Only includes enabled triggers
-        when Cursor is running (since closing a non-running app is a no-op)."""
+        when an editor is running (since closing a non-running app is a no-op)."""
         out: dict[str, float] = {}
-        if not process.cursor_running():
+        if not process.any_running(self._editors()):
             return out
 
         triggers = self.cfg.triggers
@@ -246,12 +250,12 @@ class App:
 
     def _execute_close(self, tripped_trigger: str) -> None:
         if self.cfg.close_mode == "force_kill":
-            process.kill_force()
+            process.kill_force(self._editors())
             return
 
         # graceful_warn: run the countdown in a child process (Tk can't live in
         # the tray process on macOS). Exit 0 => ran out (close); nonzero/crash
-        # => treat as cancelled, so we never kill Cursor on an ambiguous result.
+        # => treat as cancelled, so we never kill the editor on an ambiguous result.
         cancelled = True
         try:
             proc = subprocess.run(self._self_cmd("--warn", str(self.cfg.warning_seconds)))
@@ -260,10 +264,10 @@ class App:
             print(f"[afkiller] failed to show warning: {e}", file=sys.stderr)
 
         if cancelled:
-            # Keep Cursor open — reset *all* trigger clocks so we don't re-fire.
+            # Keep the editor open — reset *all* trigger clocks so we don't re-fire.
             self._reset_trigger_timers(time.monotonic())
             return
-        process.quit_graceful()
+        process.quit_graceful(self._editors())
 
     def _credit_saved(self, autotermination_minutes: Optional[int], minutes_idle: float) -> float:
         """Estimate DBUs saved by stopping the cluster early and add to the persistent total.
@@ -297,7 +301,7 @@ class App:
         target = db.cluster_id or self.last_connected_cluster_id
         if not db.enabled or not target or self.cursor_closed_at is None:
             # Feature off, no cluster known, or never observed a close this session.
-            self._set_countdown("Cursor not running")
+            self._set_countdown("Editor not running")
             return
 
         window = db.delay_minutes * 60
@@ -445,7 +449,7 @@ class App:
     def _tick(self) -> None:
         self._maybe_reload_config()
         now = time.monotonic()
-        running = process.cursor_running()
+        running = process.any_running(self._editors())
 
         # Track Cursor lifecycle.
         if running and not self._cursor_running_prev:
@@ -463,8 +467,8 @@ class App:
                 self.cursor_closed_at = now
         self._cursor_running_prev = running
 
-        # Update "last cursor foreground" timestamp if it's the frontmost app now.
-        if running and focus.is_cursor_foreground():
+        # Update "last editor foreground" timestamp if a watched editor is frontmost now.
+        if running and focus.foreground_editor(self._editors()) is not None:
             self.last_cursor_foreground_at = now
 
         # While Cursor runs, periodically scan for the live remote SSH session. It serves two
@@ -516,7 +520,7 @@ class App:
         # no cluster — so hold off and keep the trigger clocks reset until a session connects.
         if self.cfg.close_only_when_ssh_connected and not self._ssh_active:
             self._reset_trigger_timers(now)
-            self._set_countdown("Cursor open (no SSH session)")
+            self._set_countdown("Editor open (no SSH session)")
             return
 
         remaining = self._remaining_for_enabled_triggers(now)
@@ -526,7 +530,7 @@ class App:
 
         tripped = [k for k, v in remaining.items() if v <= 0]
         if tripped:
-            self._set_countdown("Closing Cursor...")
+            self._set_countdown("Closing editor...")
             self._execute_close(tripped[0])
             return
 

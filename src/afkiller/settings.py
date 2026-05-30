@@ -16,7 +16,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from afkiller import config as cfg_mod
-from afkiller import databricks, process
+from afkiller import databricks, editors, process
 from afkiller.config import (
     DATABRICKS_DELAY_PRESETS,
     PAUSE_DURATION_SEC,
@@ -52,11 +52,12 @@ def run_standalone() -> None:
     def _is_paused() -> bool:
         return time.time() < cfg.paused_until_epoch
 
-    def _quit_cursor_now() -> None:
+    def _quit_editor_now() -> None:
+        eds = editors.enabled_editors(cfg.watched_editors)
         if cfg.close_mode == "force_kill":
-            process.kill_force()
+            process.kill_force(eds)
         else:
-            process.quit_graceful()
+            process.quit_graceful(eds)
 
     root = tk.Tk()
     root.title("AFKiller — Settings")
@@ -153,7 +154,7 @@ def run_standalone() -> None:
         cfg_mod.save(cfg)
 
     ttk.Checkbutton(
-        frm, text="Only close Cursor when connected over SSH",
+        frm, text="Only close the editor when connected over SSH",
         variable=ssh_gate_var, command=_on_ssh_gate,
     ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(6, 0))
     row += 1
@@ -169,6 +170,31 @@ def run_standalone() -> None:
         variable=ssh_notify_var, command=_on_ssh_notify,
     ).grid(row=row, column=0, columnspan=2, sticky="w")
     row += 1
+
+    # ----- watched editors -----
+    ttk.Label(frm, text="Watched editors", font=("Helvetica", 11, "bold")).grid(
+        row=row, column=0, columnspan=2, sticky="w", pady=(10, 2)
+    )
+    row += 1
+
+    def _on_editor_toggle(key: str, var: tk.BooleanVar) -> None:
+        keys = set(cfg.watched_editors)
+        keys.add(key) if var.get() else keys.discard(key)
+        cfg.watched_editors = [k for k in editors.KEYS if k in keys]
+        cfg_mod.save(cfg)
+
+    ed_frame = ttk.Frame(frm)
+    ed_frame.grid(row=row, column=0, columnspan=2, sticky="w")
+    row += 1
+    for i, ed in enumerate(editors.EDITORS):  # compact 3-column grid to save height
+        ed_var = tk.BooleanVar(value=ed.key in cfg.watched_editors)
+
+        def _on_ed(k: str = ed.key, var: tk.BooleanVar = ed_var) -> None:
+            _on_editor_toggle(k, var)
+
+        ttk.Checkbutton(
+            ed_frame, text=ed.display_name, variable=ed_var, command=_on_ed
+        ).grid(row=i // 3, column=i % 3, sticky="w", padx=(0, 12), pady=1)
 
     ttk.Separator(frm, orient="horizontal").grid(
         row=row, column=0, columnspan=2, sticky="ew", pady=(10, 10)
@@ -259,7 +285,7 @@ def run_standalone() -> None:
         cfg_mod.save(cfg)
 
     ttk.Checkbutton(
-        frm, text="Stop the cluster after Cursor closes",
+        frm, text="Stop the cluster after the editor closes",
         variable=db_enabled_var, command=_on_db_enabled,
     ).grid(row=row, column=0, columnspan=2, sticky="w")
     row += 1
@@ -338,7 +364,7 @@ def run_standalone() -> None:
             cluster_combo["values"] = labels
             if not infos:
                 db_status_var.set(
-                    "No connected cluster detected — connect Cursor to a cluster, "
+                    "No connected cluster detected — connect your editor to a cluster, "
                     "or paste a cluster ID."
                 )
             elif len(infos) == 1:
@@ -569,7 +595,7 @@ def run_standalone() -> None:
     btns = ttk.Frame(frm)
     btns.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(14, 0))
     btns.columnconfigure(0, weight=1)
-    ttk.Button(btns, text="Quit Cursor now", command=_quit_cursor_now).grid(
+    ttk.Button(btns, text="Quit editor now", command=_quit_editor_now).grid(
         row=0, column=0, sticky="w"
     )
     ttk.Button(btns, text="Close", command=root.destroy).grid(row=0, column=1, sticky="e")
