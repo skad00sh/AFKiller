@@ -7,6 +7,7 @@ import sys
 import time
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
 
 import pystray
@@ -180,7 +181,12 @@ class App:
                 if self.cursor_closed_at is not None
                 else 0.0
             )
-            saved = self._credit_saved(rt.autotermination_minutes if rt else None, minutes_idle)
+            saved = self._credit_saved(
+                rt.autotermination_minutes if rt else None,
+                minutes_idle,
+                target,
+                "manual",
+            )
         if db.notify:
             self._notify(
                 "AFKiller",
@@ -269,10 +275,18 @@ class App:
             return
         process.quit_graceful(self._editors())
 
-    def _credit_saved(self, autotermination_minutes: Optional[int], minutes_idle: float) -> float:
+    def _credit_saved(
+        self,
+        autotermination_minutes: Optional[int],
+        minutes_idle: float,
+        cluster_id: str,
+        reason: str,
+    ) -> float:
         """Estimate DBUs saved by stopping the cluster early and add to the persistent total.
-        Returns the credited amount (0 if cost is off or it can't be estimated). Every stop
-        (while cost tracking is on) bumps the stop count, even when the DBU credit is 0."""
+        Also appends an entry to the persistent event log so the Settings UI can show a per-
+        stop history and weekly/monthly roll-ups. Returns the credited amount (0 if cost is
+        off or it can't be estimated). Every stop (while cost tracking is on) bumps the stop
+        count and records an event, even when the DBU credit is 0."""
         if not self.cfg.cost.enabled:
             return 0.0
         rate = self.cfg.cost.dbu_per_hour
@@ -283,6 +297,13 @@ class App:
         stats = cfg_mod.load_stats()
         stats.total_dbus_saved += saved
         stats.stops_count += 1
+        stats.events.append(cfg_mod.Event(
+            timestamp=datetime.now().isoformat(timespec="seconds"),
+            cluster_id=cluster_id or "",
+            dbus_saved=saved,
+            reason=reason,
+            autotermination_minutes=autotermination_minutes or 0,
+        ))
         cfg_mod.save_stats(stats)
         return saved
 
@@ -333,7 +354,12 @@ class App:
         self._set_countdown("Stopping cluster…")
         if databricks.terminate_cluster(target, db.profile):
             minutes_idle = (now - self.cursor_closed_at) / 60.0 if self.cursor_closed_at else 0.0
-            saved = self._credit_saved(rt.autotermination_minutes if rt else None, minutes_idle)
+            saved = self._credit_saved(
+                rt.autotermination_minutes if rt else None,
+                minutes_idle,
+                target,
+                "auto",
+            )
             if db.notify:
                 self._notify("AFKiller", self._stop_message(target, saved))
             self.cursor_closed_at = None  # done; don't re-fire
