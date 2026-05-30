@@ -80,6 +80,7 @@ Puts a number on what the cluster is costing — and what AFKiller saves you. Th
 - **Live meter** — while a cluster is detected, the tray shows its running consumption, e.g. `≈ 3.40 DBU · 2h13m` (uptime × your rate).
 - **DBUs saved** — each time AFKiller stops a cluster early, it credits the auto-termination window it preempted to a running lifetime total (with a **Reset** button).
 - **Idle alert** *(off by default)* — notifies you when a cluster is `RUNNING` with no SSH session attached for *N* minutes. Handy when auto-stop is off, or to catch a cluster you started outside your editor.
+- **Recent stops + this-week / this-month roll-ups** — every cluster-stop appends an entry (timestamp, cluster id, DBUs credited, auto vs manual) to a persistent event log in `stats.toml` (capped at the 500 most-recent entries). Settings shows the latest 50 in a scrollable list under the lifetime totals, plus running this-week and this-month sums alongside the all-time number. **Reset** wipes the log along with the totals.
 
 Costs are reported in **DBUs** (Databricks' cloud-agnostic billing unit), not dollars. Databricks doesn't expose a DBU-per-node rate through the cluster API, so you enter your cluster's **DBU/hour once** in settings and every figure is an **estimate** (marked `≈`). It reuses the same `databricks` CLI profile / cluster detection as the cluster-stop feature. (Dollar conversion via a `$/DBU` rate is on the roadmap.)
 
